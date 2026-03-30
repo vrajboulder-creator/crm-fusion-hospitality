@@ -59,3 +59,17 @@ export const fmtYoy = (pct: number | null): string => {
   const sign = pct >= 0 ? '+' : '';
   return `${sign}${pct.toFixed(1)}%`;
 };
+
+/** Absolute dollar variance: Revenue - PY Revenue. Negatives in parentheses like the PDF. */
+export const fmtVariance = (current: number | null, prior: number | null): string => {
+  if (current == null || prior == null) return '—';
+  const diff = current - prior;
+  const abs = Math.abs(diff);
+  const formatted = new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0,
+  }).format(abs);
+  return diff < 0 ? `(${formatted})` : formatted;
+};

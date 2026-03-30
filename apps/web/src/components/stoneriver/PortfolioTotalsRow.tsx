@@ -1,90 +1,121 @@
 /**
- * Sticky portfolio totals row — weighted averages and sums across all properties.
+ * Subtotal and grand total rows for the Revenue Flash table.
+ * Shows aggregated Day / MTD / YTD values across all 20 columns.
  */
 
-import { fmtCurrency, fmtPct, fmtNumber, yoyChange, fmtYoy } from '../../lib/formatters';
-import type { DailyHotelPerformance, Period } from './types';
-import { getOcc, getAdr, getRevpar, getRevenue, getPyRevenue } from './types';
+import { fmtCurrency, fmtPct, fmtNumber, fmtVariance } from '../../lib/formatters';
+import type { DailyHotelPerformance } from './types';
 
-interface PortfolioTotalsRowProps {
+interface TotalRowProps {
   rows: DailyHotelPerformance[];
-  period: Period;
+  label?: string;
 }
 
-export function PortfolioTotalsRow({ rows, period }: PortfolioTotalsRowProps) {
-  const present = rows.filter((r) => r != null);
+function computeTotals(rows: DailyHotelPerformance[]) {
+  const n = rows.length;
+  if (n === 0) return null;
 
-  // Weighted occupancy: sum(occ * available) / sum(available) — fall back to mean if no available data
-  const totalAvailable = present.reduce((s, r) => s + (r.total_rooms_available ?? 0), 0);
-  const weightedOcc =
-    totalAvailable > 0
-      ? present.reduce((s, r) => {
-          const occ = getOcc(r, period) ?? 0;
-          return s + occ * (r.total_rooms_available ?? 0);
-        }, 0) / totalAvailable
-      : present.length > 0
-        ? present.reduce((s, r) => s + (getOcc(r, period) ?? 0), 0) / present.length
-        : null;
+  const sum = (fn: (r: DailyHotelPerformance) => number | null) =>
+    rows.reduce((s, r) => { const v = fn(r); return v != null ? s + v : s; }, 0);
 
-  // For day period: ADR = total_revenue / total_rooms_sold; RevPAR = total_revenue / total_available
-  // For MTD/YTD: simple mean of available values (rooms sold not tracked by period)
-  const totalRoomsSold = present.reduce((s, r) => s + (r.total_rooms_sold ?? 0), 0);
-  const totalRev = present.reduce((s, r) => s + (getRevenue(r, period) ?? 0), 0);
-  const totalPyRev = present.reduce((s, r) => {
-    const py = getPyRevenue(r, period);
-    return py != null ? s + py : s;
-  }, 0);
-  const pyCount = present.filter((r) => getPyRevenue(r, period) != null).length;
-  const totalOoo = present.reduce((s, r) => s + (r.ooo_rooms ?? 0), 0);
+  const avg = (fn: (r: DailyHotelPerformance) => number | null) => {
+    const vals = rows.map(fn).filter((v): v is number => v != null);
+    return vals.length > 0 ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
+  };
 
-  const portfolioAdr =
-    period === 'day' && totalRoomsSold > 0
-      ? totalRev / totalRoomsSold
-      : present.length > 0
-        ? present.reduce((s, r) => s + (getAdr(r, period) ?? 0), 0) / present.filter((r) => getAdr(r, period) != null).length
-        : null;
+  return {
+    occ_day: avg((r) => r.occupancy_day),
+    adr_day: avg((r) => r.adr_day),
+    revpar_day: avg((r) => r.revpar_day),
+    rooms_sold: sum((r) => r.total_rooms_sold),
+    rev_day: sum((r) => r.revenue_day),
+    ooo: sum((r) => r.ooo_rooms),
+    py_rev_day: sum((r) => r.py_revenue_day),
 
-  const portfolioRevpar =
-    period === 'day' && totalAvailable > 0
-      ? totalRev / totalAvailable
-      : present.length > 0
-        ? present.reduce((s, r) => s + (getRevpar(r, period) ?? 0), 0) / present.filter((r) => getRevpar(r, period) != null).length
-        : null;
+    occ_mtd: avg((r) => r.occupancy_mtd),
+    adr_mtd: avg((r) => r.adr_mtd),
+    revpar_mtd: avg((r) => r.revpar_mtd),
+    rev_mtd: sum((r) => r.revenue_mtd),
+    py_rev_mtd: sum((r) => r.py_revenue_mtd),
 
-  const pyTotal = pyCount > 0 ? totalPyRev : null;
-  const delta = yoyChange(totalRev, pyTotal);
+    occ_ytd: avg((r) => r.occupancy_ytd),
+    adr_ytd: avg((r) => r.adr_ytd),
+    revpar_ytd: avg((r) => r.revpar_ytd),
+    rev_ytd: sum((r) => r.revenue_ytd),
+    py_rev_ytd: sum((r) => r.py_revenue_ytd),
+  };
+}
 
-  const cellCls = 'px-3 py-2 text-right tabular-nums text-xs font-semibold text-[#1a1a1a]';
-  const deltaCls = delta == null ? 'text-[#6b7280]' : delta >= 0 ? 'text-[#16a34a]' : 'text-[#dc2626]';
+const tc = 'px-1.5 py-1 text-right tabular-nums text-[11px] font-semibold text-[#1a1a1a]';
+const tcMuted = `${tc} text-[#6b7280]`;
+
+function varianceColor(current: number | null, prior: number | null): string {
+  if (current == null || prior == null) return 'text-[#9ca3af]';
+  return current - prior >= 0 ? 'text-[#16a34a]' : 'text-[#dc2626]';
+}
+
+function TotalCells({ t }: { t: NonNullable<ReturnType<typeof computeTotals>> }) {
+  return (
+    <>
+      {/* Day */}
+      <td className={`${tc} border-l border-[#e5e5e5]`}>{t.occ_day != null ? fmtPct(t.occ_day) : '—'}</td>
+      <td className={tc}>{t.adr_day != null ? fmtCurrency(t.adr_day) : '—'}</td>
+      <td className={tc}>{t.revpar_day != null ? fmtCurrency(t.revpar_day) : '—'}</td>
+      <td className={tc}>{fmtNumber(t.rooms_sold)}</td>
+      <td className={tc}>{fmtCurrency(t.rev_day)}</td>
+      <td className={`${tc} ${t.ooo > 0 ? 'text-[#dc2626]' : ''}`}>{fmtNumber(t.ooo)}</td>
+      <td className={tcMuted}>{fmtCurrency(t.py_rev_day)}</td>
+      <td className={`${tc} ${varianceColor(t.rev_day, t.py_rev_day)}`}>
+        {fmtVariance(t.rev_day, t.py_rev_day)}
+      </td>
+      {/* MTD */}
+      <td className={`${tc} border-l border-[#d1d5db]`}>{t.occ_mtd != null ? fmtPct(t.occ_mtd) : '—'}</td>
+      <td className={tc}>{t.adr_mtd != null ? fmtCurrency(t.adr_mtd) : '—'}</td>
+      <td className={tc}>{t.revpar_mtd != null ? fmtCurrency(t.revpar_mtd) : '—'}</td>
+      <td className={tc}>{fmtCurrency(t.rev_mtd)}</td>
+      <td className={tcMuted}>{fmtCurrency(t.py_rev_mtd)}</td>
+      <td className={`${tc} ${varianceColor(t.rev_mtd, t.py_rev_mtd)}`}>
+        {fmtVariance(t.rev_mtd, t.py_rev_mtd)}
+      </td>
+      {/* YTD */}
+      <td className={`${tc} border-l border-[#d1d5db]`}>{t.occ_ytd != null ? fmtPct(t.occ_ytd) : '—'}</td>
+      <td className={tc}>{t.adr_ytd != null ? fmtCurrency(t.adr_ytd) : '—'}</td>
+      <td className={tc}>{t.revpar_ytd != null ? fmtCurrency(t.revpar_ytd) : '—'}</td>
+      <td className={tc}>{fmtCurrency(t.rev_ytd)}</td>
+      <td className={tcMuted}>{fmtCurrency(t.py_rev_ytd)}</td>
+      <td className={`${tc} ${varianceColor(t.rev_ytd, t.py_rev_ytd)}`}>
+        {fmtVariance(t.rev_ytd, t.py_rev_ytd)}
+      </td>
+    </>
+  );
+}
+
+/** Brand subtotal row */
+export function SubtotalRow({ rows, label }: TotalRowProps) {
+  const t = computeTotals(rows);
+  if (!t) return null;
 
   return (
-    <tr className="sticky bottom-0 bg-[#fafafa] border-t-2 border-[#1a1a1a]">
-      <td className="px-3 py-2 text-xs font-bold text-[#1a1a1a] whitespace-nowrap">
-        Portfolio Total
+    <tr className="bg-[#f3f4f6] border-b border-[#d1d5db]">
+      <td className="px-2 py-1 text-[11px] font-bold text-[#374151] sticky left-0 bg-[#f3f4f6] z-[5] border-r border-[#e5e5e5] whitespace-nowrap">
+        {label ?? 'Subtotal'}
       </td>
-      <td className="px-3 py-2 text-xs text-[#6b7280]">{present.length} properties</td>
-      <td className={cellCls}>
-        {weightedOcc != null ? fmtPct(weightedOcc) : '—'}
+      <TotalCells t={t} />
+    </tr>
+  );
+}
+
+/** Grand total row at the bottom of the table */
+export function GrandTotalRow({ rows }: TotalRowProps) {
+  const t = computeTotals(rows);
+  if (!t) return null;
+
+  return (
+    <tr className="bg-[#e5e7eb] border-t-2 border-[#374151] font-bold">
+      <td className="px-2 py-1.5 text-[11px] font-bold text-[#111827] sticky left-0 bg-[#e5e7eb] z-[5] border-r border-[#d1d5db] whitespace-nowrap">
+        TOTAL: All Properties
       </td>
-      <td className={cellCls}>
-        {portfolioAdr != null && !isNaN(portfolioAdr) ? fmtCurrency(portfolioAdr) : '—'}
-      </td>
-      <td className={cellCls}>
-        {portfolioRevpar != null && !isNaN(portfolioRevpar) ? fmtCurrency(portfolioRevpar) : '—'}
-      </td>
-      <td className={cellCls}>
-        {period === 'day' ? fmtNumber(totalRoomsSold) : '—'}
-      </td>
-      <td className={`${cellCls} ${totalOoo > 0 ? 'text-[#dc2626]' : ''}`}>
-        {fmtNumber(totalOoo)}
-      </td>
-      <td className={cellCls}>{fmtCurrency(totalRev)}</td>
-      <td className={`${cellCls} text-[#6b7280]`}>
-        {pyTotal != null ? fmtCurrency(pyTotal) : '—'}
-      </td>
-      <td className={`${cellCls} ${deltaCls}`}>
-        {delta != null ? fmtYoy(delta) : '—'}
-      </td>
+      <TotalCells t={t} />
     </tr>
   );
 }

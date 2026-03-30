@@ -1,162 +1,129 @@
 /**
- * Single property row in the Stoneriver performance table.
- * Expands on click to show full Day/MTD/YTD detail + last 7 days mini table.
+ * Single property row in the Revenue Flash–style table.
+ * Shows all Day / MTD / YTD values in one row (21 columns).
  */
 
 import { useState } from 'react';
 import { clsx } from 'clsx';
-import { fmtCurrency, fmtPct, fmtNumber, yoyChange, fmtYoy, fmtDate } from '../../lib/formatters';
-import type { DailyHotelPerformance, Period, SparklinePoint } from './types';
-import { getOcc, getAdr, getRevpar, getRevenue, getPyRevenue } from './types';
+import { fmtCurrency, fmtPct, fmtNumber, fmtVariance, fmtDate } from '../../lib/formatters';
+import type { DailyHotelPerformance, SparklinePoint } from './types';
 import type { Property } from '../../constants/stoneriver-properties';
 
-interface PerformanceTableRowProps {
+interface RevenueFlashRowProps {
   property: Property;
   data: DailyHotelPerformance | null;
-  period: Period;
   sparklinePoints: SparklinePoint[];
 }
 
+const cell = 'px-1.5 py-1 text-right tabular-nums text-[11px] text-[#1a1a1a]';
+const cellMuted = `${cell} text-[#6b7280]`;
+
 function occColor(occ: number | null): string {
-  if (occ == null) return 'text-[#6b7280]';
+  if (occ == null) return 'text-[#9ca3af]';
   if (occ >= 70) return 'text-[#16a34a] font-semibold';
   if (occ >= 50) return 'text-[#ca8a04] font-semibold';
   return 'text-[#dc2626] font-semibold';
 }
 
-function MetricCol({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="text-center min-w-[80px]">
-      <p className="text-[10px] text-[#6b7280] uppercase tracking-wide mb-0.5">{label}</p>
-      <p className="text-sm font-semibold tabular-nums text-[#1a1a1a]">{value}</p>
-    </div>
-  );
+function varianceColor(current: number | null, prior: number | null): string {
+  if (current == null || prior == null) return 'text-[#9ca3af]';
+  const diff = current - prior;
+  if (diff >= 0) return 'text-[#16a34a]';
+  return 'text-[#dc2626]';
 }
 
 function ExpandedDetail({ data, sparklinePoints }: { data: DailyHotelPerformance; sparklinePoints: SparklinePoint[] }) {
   const last7 = sparklinePoints.slice(-7);
+  if (last7.length === 0) return null;
 
   return (
     <tr>
-      <td colSpan={10} className="px-3 pb-3 pt-0 bg-[#fafafa] border-b border-[#e5e5e5]">
-        {/* Day / MTD / YTD side by side */}
-        <div className="grid grid-cols-3 gap-4 py-3 border-b border-[#e5e5e5] mb-3">
-          {(['day', 'mtd', 'ytd'] as Period[]).map((p) => (
-            <div key={p} className="space-y-2">
-              <p className="text-[10px] font-bold uppercase tracking-widest text-[#6b7280]">
-                {p === 'day' ? 'Day' : p === 'mtd' ? 'Month to Date' : 'Year to Date'}
-              </p>
-              <div className="flex flex-wrap gap-3">
-                <MetricCol label="Occ %" value={getOcc(data, p) != null ? fmtPct(getOcc(data, p)) : '—'} />
-                <MetricCol label="ADR" value={getAdr(data, p) != null ? fmtCurrency(getAdr(data, p)) : '—'} />
-                <MetricCol label="RevPAR" value={getRevpar(data, p) != null ? fmtCurrency(getRevpar(data, p)) : '—'} />
-                <MetricCol label="Revenue" value={getRevenue(data, p) != null ? fmtCurrency(getRevenue(data, p)) : '—'} />
-                <MetricCol label="PY Rev" value={getPyRevenue(data, p) != null ? fmtCurrency(getPyRevenue(data, p)) : '—'} />
-              </div>
-            </div>
-          ))}
-        </div>
-
-        {/* Last 7 days mini table */}
-        {last7.length > 0 && (
-          <div>
-            <p className="text-[10px] font-bold uppercase tracking-widest text-[#6b7280] mb-2">Last 7 Days</p>
-            <table className="text-xs w-auto">
-              <thead>
-                <tr className="text-[#6b7280]">
-                  <th className="text-left pr-4 pb-1 font-medium">Date</th>
-                  <th className="text-right pr-4 pb-1 font-medium tabular-nums">Occ %</th>
-                  <th className="text-right pr-4 pb-1 font-medium tabular-nums">RevPAR</th>
-                  <th className="text-right pb-1 font-medium tabular-nums">Revenue</th>
-                </tr>
-              </thead>
-              <tbody>
-                {last7.map((pt) => (
-                  <tr key={pt.report_date} className="border-t border-[#e5e5e5]">
-                    <td className="pr-4 py-1 text-[#6b7280]">{fmtDate(pt.report_date)}</td>
-                    <td className="pr-4 py-1 text-right tabular-nums">{pt.occupancy_day != null ? fmtPct(pt.occupancy_day) : '—'}</td>
-                    <td className="pr-4 py-1 text-right tabular-nums">{pt.revpar_day != null ? fmtCurrency(pt.revpar_day) : '—'}</td>
-                    <td className="py-1 text-right tabular-nums">{pt.revenue_day != null ? fmtCurrency(pt.revenue_day) : '—'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
+      <td colSpan={21} className="px-3 pb-3 pt-1 bg-[#fafafa] border-b border-[#e5e5e5]">
+        <p className="text-[10px] font-bold uppercase tracking-widest text-[#6b7280] mb-1">Last 7 Days</p>
+        <table className="text-[11px] w-auto">
+          <thead>
+            <tr className="text-[#6b7280]">
+              <th className="text-left pr-4 pb-1 font-medium">Date</th>
+              <th className="text-right pr-4 pb-1 font-medium">Occ%</th>
+              <th className="text-right pr-4 pb-1 font-medium">RevPAR</th>
+              <th className="text-right pb-1 font-medium">Revenue</th>
+            </tr>
+          </thead>
+          <tbody>
+            {last7.map((pt) => (
+              <tr key={pt.report_date} className="border-t border-[#e5e5e5]">
+                <td className="pr-4 py-0.5 text-[#6b7280]">{fmtDate(pt.report_date)}</td>
+                <td className="pr-4 py-0.5 text-right">{pt.occupancy_day != null ? fmtPct(pt.occupancy_day) : '—'}</td>
+                <td className="pr-4 py-0.5 text-right">{pt.revpar_day != null ? fmtCurrency(pt.revpar_day) : '—'}</td>
+                <td className="py-0.5 text-right">{pt.revenue_day != null ? fmtCurrency(pt.revenue_day) : '—'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </td>
     </tr>
   );
 }
 
-export function PerformanceTableRow({ property, data, period, sparklinePoints }: PerformanceTableRowProps) {
+export function RevenueFlashRow({ property, data, sparklinePoints }: RevenueFlashRowProps) {
   const [expanded, setExpanded] = useState(false);
-
-  const occ = data ? getOcc(data, period) : null;
-  const adr = data ? getAdr(data, period) : null;
-  const revpar = data ? getRevpar(data, period) : null;
-  const rev = data ? getRevenue(data, period) : null;
-  const py = data ? getPyRevenue(data, period) : null;
-  const delta = yoyChange(rev, py);
-
-  const cellCls = 'px-3 py-2 text-right tabular-nums text-[#1a1a1a] text-xs';
-  const deltaCls = delta == null ? 'text-[#6b7280]' : delta >= 0 ? 'text-[#16a34a]' : 'text-[#dc2626]';
+  const d = data;
 
   return (
     <>
       <tr
         onClick={() => data && setExpanded((v) => !v)}
         className={clsx(
-          'border-b border-[#e5e5e5] text-xs transition-colors',
-          data ? 'cursor-pointer hover:bg-[#f5f5f5]' : 'opacity-50 cursor-default',
+          'border-b border-[#e5e5e5] text-[11px] transition-colors',
+          data ? 'cursor-pointer hover:bg-[#f9fafb]' : 'opacity-40 cursor-default',
           expanded && 'bg-[#f5f5f5]',
         )}
       >
-        {/* Property name */}
-        <td className="px-3 py-2">
-          <p className="font-medium text-[#1a1a1a] truncate max-w-[180px]" title={property.name}>
+        {/* Property name — sticky */}
+        <td className="px-2 py-1 sticky left-0 bg-white z-[5] border-r border-[#e5e5e5]">
+          <span className="font-medium text-[#1a1a1a] truncate block max-w-[200px]" title={property.name}>
             {property.name}
-          </p>
+          </span>
         </td>
 
-        {/* Group */}
-        <td className="px-3 py-2">
-          <span className="text-[#6b7280] text-[11px]">{property.group}</span>
+        {/* ─── Day section ─── */}
+        <td className={`${cell} border-l border-[#e5e5e5] ${occColor(d?.occupancy_day ?? null)}`}>
+          {d?.occupancy_day != null ? fmtPct(d.occupancy_day) : '—'}
+        </td>
+        <td className={cell}>{d?.adr_day != null ? fmtCurrency(d.adr_day) : '—'}</td>
+        <td className={cell}>{d?.revpar_day != null ? fmtCurrency(d.revpar_day) : '—'}</td>
+        <td className={cell}>{d?.total_rooms_sold != null ? fmtNumber(d.total_rooms_sold) : '—'}</td>
+        <td className={`${cell} font-medium`}>{d?.revenue_day != null ? fmtCurrency(d.revenue_day) : '—'}</td>
+        <td className={clsx(cell, d?.ooo_rooms && d.ooo_rooms > 0 ? 'text-[#dc2626] font-semibold' : 'text-[#9ca3af]')}>
+          {d?.ooo_rooms != null ? d.ooo_rooms : '—'}
+        </td>
+        <td className={cellMuted}>{d?.py_revenue_day != null ? fmtCurrency(d.py_revenue_day) : '—'}</td>
+        <td className={`${cell} ${varianceColor(d?.revenue_day ?? null, d?.py_revenue_day ?? null)}`}>
+          {fmtVariance(d?.revenue_day ?? null, d?.py_revenue_day ?? null)}
         </td>
 
-        {/* Occupancy */}
-        <td className={`${cellCls} ${occColor(occ)}`}>
-          {occ != null ? fmtPct(occ) : '—'}
+        {/* ─── MTD section ─── */}
+        <td className={`${cell} border-l border-[#d1d5db] ${occColor(d?.occupancy_mtd ?? null)}`}>
+          {d?.occupancy_mtd != null ? fmtPct(d.occupancy_mtd) : '—'}
+        </td>
+        <td className={cell}>{d?.adr_mtd != null ? fmtCurrency(d.adr_mtd) : '—'}</td>
+        <td className={cell}>{d?.revpar_mtd != null ? fmtCurrency(d.revpar_mtd) : '—'}</td>
+        <td className={`${cell} font-medium`}>{d?.revenue_mtd != null ? fmtCurrency(d.revenue_mtd) : '—'}</td>
+        <td className={cellMuted}>{d?.py_revenue_mtd != null ? fmtCurrency(d.py_revenue_mtd) : '—'}</td>
+        <td className={`${cell} ${varianceColor(d?.revenue_mtd ?? null, d?.py_revenue_mtd ?? null)}`}>
+          {fmtVariance(d?.revenue_mtd ?? null, d?.py_revenue_mtd ?? null)}
         </td>
 
-        {/* ADR */}
-        <td className={cellCls}>{adr != null ? fmtCurrency(adr) : '—'}</td>
-
-        {/* RevPAR */}
-        <td className={cellCls}>{revpar != null ? fmtCurrency(revpar) : '—'}</td>
-
-        {/* Rooms Sold (day only) */}
-        <td className={cellCls}>
-          {period === 'day' && data?.total_rooms_sold != null ? fmtNumber(data.total_rooms_sold) : '—'}
+        {/* ─── YTD section ─── */}
+        <td className={`${cell} border-l border-[#d1d5db] ${occColor(d?.occupancy_ytd ?? null)}`}>
+          {d?.occupancy_ytd != null ? fmtPct(d.occupancy_ytd) : '—'}
         </td>
-
-        {/* OOO */}
-        <td className={clsx(cellCls, data?.ooo_rooms && data.ooo_rooms > 0 ? 'text-[#dc2626] font-semibold' : '')}>
-          {data?.ooo_rooms != null ? data.ooo_rooms : '—'}
-        </td>
-
-        {/* Revenue */}
-        <td className={cellCls}>
-          {rev != null ? fmtCurrency(rev) : <span className="text-[#6b7280]">No report</span>}
-        </td>
-
-        {/* PY Revenue */}
-        <td className={`${cellCls} text-[#6b7280]`}>
-          {py != null ? fmtCurrency(py) : '—'}
-        </td>
-
-        {/* Rev Δ % */}
-        <td className={`${cellCls} ${deltaCls}`}>
-          {delta != null ? fmtYoy(delta) : '—'}
+        <td className={cell}>{d?.adr_ytd != null ? fmtCurrency(d.adr_ytd) : '—'}</td>
+        <td className={cell}>{d?.revpar_ytd != null ? fmtCurrency(d.revpar_ytd) : '—'}</td>
+        <td className={`${cell} font-medium`}>{d?.revenue_ytd != null ? fmtCurrency(d.revenue_ytd) : '—'}</td>
+        <td className={cellMuted}>{d?.py_revenue_ytd != null ? fmtCurrency(d.py_revenue_ytd) : '—'}</td>
+        <td className={`${cell} ${varianceColor(d?.revenue_ytd ?? null, d?.py_revenue_ytd ?? null)}`}>
+          {fmtVariance(d?.revenue_ytd ?? null, d?.py_revenue_ytd ?? null)}
         </td>
       </tr>
 

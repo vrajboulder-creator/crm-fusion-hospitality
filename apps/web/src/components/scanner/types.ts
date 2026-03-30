@@ -31,12 +31,16 @@ export interface ScannedFile {
   ocrPageCount?: number;
   /** First 500 chars of OCR-extracted markdown */
   contentPreview?: string;
+  /** Full extracted text (Revenue Flash reports) */
+  fullText?: string;
   /** Table headers found inside the document */
   tableHeaders?: string[];
   /** Data patterns detected (occupancy, adr, aging_buckets, etc.) */
   dataPatterns?: string[];
   /** Extracted KPIs from the document content */
   kpis?: ExtractedKPIs;
+  /** How the file content was extracted */
+  extractionMethod?: 'native-pdf' | 'ocr-pdf' | 'spreadsheet' | 'filename-only';
 }
 
 export interface PropertyFolder {

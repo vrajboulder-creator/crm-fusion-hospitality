@@ -27,6 +27,13 @@ interface ScanProgress {
   elapsedMs: number;
   currentFile: string;
   errorMessage?: string;
+  /** Per-type estimates */
+  totalPdfEstimate?: number;
+  totalSpreadsheetEstimate?: number;
+  /** Categorized processed counts */
+  nativePdfCount?: number;
+  ocrPdfCount?: number;
+  spreadsheetCount?: number;
 }
 
 interface ScanControlsProps {
@@ -38,6 +45,35 @@ function fmtDuration(ms: number): string {
   if (s < 60) return `${s}s`;
   const m = Math.floor(s / 60);
   return `${m}m ${s % 60}s`;
+}
+
+function TypeProgressBar({
+  label, count, total, color, bgColor, textColor, isDone,
+}: {
+  label: string; count: number; total: number;
+  color: string; bgColor: string; textColor: string; isDone: boolean;
+}) {
+  // For PDFs, native + OCR share the same total, so show count out of processed-so-far
+  const pctVal = total > 0 ? Math.min(100, Math.round((count / total) * 100)) : 0;
+  return (
+    <div className={`rounded-lg ${bgColor} px-3 py-2.5`}>
+      <div className="flex items-center justify-between mb-1.5">
+        <span className={`text-[10px] font-semibold uppercase tracking-wider ${textColor}`}>{label}</span>
+        <span className={`text-xs tabular-nums font-bold ${textColor}`}>{count}</span>
+      </div>
+      <div className="h-1.5 rounded-full bg-white/60 overflow-hidden">
+        <div
+          className={`h-full rounded-full ${color} transition-all duration-500`}
+          style={{ width: `${isDone ? 100 : pctVal}%` }}
+        />
+      </div>
+      {total > 0 && (
+        <p className={`text-[10px] tabular-nums mt-1 ${textColor} opacity-70`}>
+          {isDone ? `${count} of ${total}` : `${count} / ${total}`}
+        </p>
+      )}
+    </div>
+  );
 }
 
 export function ScanControls({ onScanComplete }: ScanControlsProps) {
@@ -113,7 +149,7 @@ export function ScanControls({ onScanComplete }: ScanControlsProps) {
         totalFilesEstimate: 0,
         elapsedMs: 0,
         currentFile: '',
-        errorMessage: 'Run manually: pnpm tsx scripts/scanWithOCR.ts "' + folderPath + '"',
+        errorMessage: 'Run manually: pnpm tsx scripts/scanWithOCR-local.ts "' + folderPath + '"',
       });
       setIsScanning(false);
     });
@@ -198,73 +234,107 @@ export function ScanControls({ onScanComplete }: ScanControlsProps) {
               </button>
             </div>
             <p className="text-[10px] text-neutral-400 mt-1">
-              Enter the full path to the folder containing hotel report PDFs. The scanner will use Mistral OCR to read and categorize every file.
+              Enter the full path to the folder containing hotel report PDFs. The scanner will use local OCR to read and categorize every file.
             </p>
           </div>
 
           {/* Progress section */}
           {progress && (
-            <div>
-              <label className="text-[10px] font-semibold text-neutral-400 uppercase tracking-widest mb-2 block">
-                {progress.status === 'scanning' ? 'Progress' : progress.status === 'done' ? 'Completed' : 'Error'}
-              </label>
-
-              {/* Progress bar */}
-              <div className="h-3 rounded-full bg-neutral-100 overflow-hidden mb-2">
-                <div
-                  className={clsx(
-                    'h-full rounded-full transition-all duration-500',
-                    progress.status === 'done' ? 'bg-success-500' :
-                    progress.status === 'error' ? 'bg-danger-500' :
-                    'bg-brand-500',
-                  )}
-                  style={{ width: `${progress.status === 'done' ? 100 : pct}%` }}
-                />
-              </div>
-
-              {/* Stats row */}
-              <div className="flex items-center gap-4 text-xs">
-                <span className="tabular-nums text-neutral-600 font-medium">
+            <div className="space-y-4">
+              {/* Overall progress */}
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-[10px] font-semibold text-neutral-400 uppercase tracking-widest">
+                    {progress.status === 'scanning' ? 'Overall Progress' : progress.status === 'done' ? 'Completed' : 'Error'}
+                  </label>
+                  <div className="flex items-center gap-3 text-xs">
+                    {progress.currentDate && progress.status === 'scanning' && (
+                      <span className="text-neutral-400">
+                        Processing {progress.currentDate}
+                      </span>
+                    )}
+                    <span className="flex items-center gap-1 text-neutral-400">
+                      <ClockIcon className="w-3.5 h-3.5" />
+                      {fmtDuration(progress.elapsedMs)}
+                    </span>
+                    {progress.status === 'scanning' && progress.filesProcessed > 0 && (
+                      <span className="text-neutral-400 tabular-nums">
+                        ~{fmtDuration(
+                          ((progress.totalFilesEstimate - progress.filesProcessed) / (progress.filesProcessed / progress.elapsedMs))
+                        )} left
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <div className="h-2.5 rounded-full bg-neutral-100 overflow-hidden mb-1">
+                  <div
+                    className={clsx(
+                      'h-full rounded-full transition-all duration-500',
+                      progress.status === 'done' ? 'bg-success-500' :
+                      progress.status === 'error' ? 'bg-danger-500' :
+                      'bg-neutral-400',
+                    )}
+                    style={{ width: `${progress.status === 'done' ? 100 : pct}%` }}
+                  />
+                </div>
+                <p className="text-[11px] tabular-nums text-neutral-500">
                   {progress.status === 'done' ? (
-                    <span className="text-success-600">{progress.filesProcessed} files processed</span>
+                    <span className="text-success-600 font-medium">{progress.filesProcessed} files processed</span>
                   ) : (
                     <>{progress.filesProcessed} / {progress.totalFilesEstimate} files ({pct}%)</>
                   )}
-                </span>
-
-                {progress.currentDate && progress.status === 'scanning' && (
-                  <span className="text-neutral-400">
-                    Processing {progress.currentDate}
-                  </span>
-                )}
-
-                <span className="flex items-center gap-1 text-neutral-400 ml-auto">
-                  <ClockIcon className="w-3.5 h-3.5" />
-                  {fmtDuration(progress.elapsedMs)}
-                </span>
-
-                {progress.status === 'scanning' && progress.filesProcessed > 0 && (
-                  <span className="text-neutral-400 tabular-nums">
-                    ~{fmtDuration(
-                      ((progress.totalFilesEstimate - progress.filesProcessed) / (progress.filesProcessed / progress.elapsedMs))
-                    )} remaining
-                  </span>
-                )}
+                </p>
               </div>
+
+              {/* Per-type progress bars */}
+              {(progress.totalPdfEstimate || progress.totalSpreadsheetEstimate) ? (
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  {/* PDF (text-based) */}
+                  <TypeProgressBar
+                    label="PDF (Text)"
+                    count={progress.nativePdfCount ?? 0}
+                    total={progress.totalPdfEstimate ?? 0}
+                    color="bg-emerald-500"
+                    bgColor="bg-emerald-50"
+                    textColor="text-emerald-700"
+                    isDone={progress.status === 'done'}
+                  />
+                  {/* PDF (scanned / OCR) */}
+                  <TypeProgressBar
+                    label="PDF (Scanned)"
+                    count={progress.ocrPdfCount ?? 0}
+                    total={progress.totalPdfEstimate ?? 0}
+                    color="bg-amber-500"
+                    bgColor="bg-amber-50"
+                    textColor="text-amber-700"
+                    isDone={progress.status === 'done'}
+                  />
+                  {/* Spreadsheets */}
+                  <TypeProgressBar
+                    label="XLSX / CSV"
+                    count={progress.spreadsheetCount ?? 0}
+                    total={progress.totalSpreadsheetEstimate ?? 0}
+                    color="bg-blue-500"
+                    bgColor="bg-blue-50"
+                    textColor="text-blue-700"
+                    isDone={progress.status === 'done'}
+                  />
+                </div>
+              ) : null}
 
               {/* Error message */}
               {progress.status === 'error' && progress.errorMessage && (
-                <div className="mt-3 p-3 bg-danger-50 rounded-md border border-danger-200">
+                <div className="p-3 bg-danger-50 rounded-md border border-danger-200">
                   <p className="text-xs text-danger-700 font-mono">{progress.errorMessage}</p>
                 </div>
               )}
 
               {/* Manual run hint */}
               {progress.status === 'error' && (
-                <div className="mt-2 p-3 bg-neutral-50 rounded-md">
+                <div className="p-3 bg-neutral-50 rounded-md">
                   <p className="text-[10px] font-semibold text-neutral-500 mb-1">Run manually in terminal:</p>
                   <code className="text-xs text-neutral-600 font-mono">
-                    pnpm tsx scripts/scanWithOCR.ts "{folderPath}" --concurrency 10
+                    pnpm tsx scripts/scanWithOCR-local.ts "{folderPath}" --concurrency 10
                   </code>
                 </div>
               )}
@@ -276,7 +346,7 @@ export function ScanControls({ onScanComplete }: ScanControlsProps) {
             <div className="p-3 bg-neutral-50 rounded-md">
               <p className="text-[10px] font-semibold text-neutral-500 mb-1">Or run from terminal:</p>
               <code className="text-xs text-neutral-600 font-mono block">
-                pnpm tsx scripts/scanWithOCR.ts "./path/to/folder" --concurrency 10
+                pnpm tsx scripts/scanWithOCR-local.ts "./path/to/folder" --concurrency 10
               </code>
               <p className="text-[10px] text-neutral-400 mt-1">
                 The progress bar will automatically appear when a scan is running.

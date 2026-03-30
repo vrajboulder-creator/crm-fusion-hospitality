@@ -2,6 +2,7 @@
  * Fastify server entry point — registers all plugins and route modules.
  */
 
+import 'dotenv/config';
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
@@ -26,6 +27,7 @@ import { aiRoutes } from './routes/ai/index.js';
 import { adminRoutes } from './routes/admin/index.js';
 import { webhooksRoutes } from './routes/webhooks/index.js';
 import { batchesRoutes } from './routes/batches/index.js';
+import { scannerRoutes } from './routes/scanner/index.js';
 
 const app = Fastify({
   logger: {
@@ -69,6 +71,7 @@ await app.register(aiRoutes, { prefix: '/api/v1/ai' });
 await app.register(adminRoutes, { prefix: '/api/v1/admin' });
 await app.register(webhooksRoutes, { prefix: '/api/v1/webhooks' });
 await app.register(batchesRoutes, { prefix: '/api/v1/batches' });
+await app.register(scannerRoutes, { prefix: '/api/v1/scanner' });
 
 // ─── Health ───────────────────────────────────────────────────────────────────
 

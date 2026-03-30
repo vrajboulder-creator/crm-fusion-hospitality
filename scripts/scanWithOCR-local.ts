@@ -1,22 +1,28 @@
 /**
- * Content-first hotel report scanner using Mistral OCR.
+ * Local OCR hotel report scanner using OCR-V1 (Tesseract.js).
  *
- * Instead of guessing categories from filenames, this scanner:
- *   1. Sends every PDF to Mistral OCR to extract markdown + tables
- *   2. Analyzes the actual content (table headers, data patterns, report titles)
- *   3. Auto-discovers the category from what's inside the document
- *   4. Extracts KPIs (ADR, Occupancy, RevPAR, etc.) from real table data
+ * Same classification logic as scanWithOCR.ts but uses local OCR instead of Mistral cloud.
+ * Strategy:
+ *   1. Spreadsheets (XLSX/CSV/ODS) -> direct read (instant)
+ *   2. Text-based PDFs -> native pdfjs extraction (instant, 100% accurate)
+ *   3. Scanned PDFs/images -> Tesseract.js OCR via OCR-V1 worker pool
  *
  * Usage:
- *   pnpm tsx scripts/scanWithOCR.ts <folder-path> [--out <path>] [--concurrency <n>]
+ *   pnpm tsx scripts/scanWithOCR-local.ts <folder-path> [--out <path>] [--concurrency <n>] [--workers <n>]
  */
 
 import fs from 'fs';
 import path from 'path';
-import { Mistral } from '@mistralai/mistralai';
-import { openAsBlob } from 'node:fs';
+import os from 'os';
 
-const MISTRAL_API_KEY = 'RljF7bg7dFtCNw1BOnLr2CfN7hd5BSBX';
+// OCR-V1 imports
+import { extractPdfText } from '../OCR-V1-/lib/ocr/pdfTextExtractor.js';
+import { extractPdfPages } from '../OCR-V1-/lib/ocr/pdfHandler.js';
+import { TesseractWorkerPool } from '../OCR-V1-/lib/ocr/workerPool.js';
+import { preprocessImage } from '../OCR-V1-/lib/ocr/preprocess.js';
+import { postprocessText } from '../OCR-V1-/lib/ocr/postprocess.js';
+import { extractSpreadsheet } from '../OCR-V1-/lib/ocr/spreadsheetHandler.js';
+import { nvidiaOcrRecognize } from '../OCR-V1-/lib/ocr/nvidiaOcr.js';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -45,14 +51,14 @@ interface ScannedFile {
   confidence: number;
   error: string | null;
   ocrPageCount: number;
-  /** First 500 chars of OCR markdown for preview */
   contentPreview: string;
-  /** Table headers found in the document */
+  /** Full extracted text (stored for Revenue Flash reports) */
+  fullText?: string;
   tableHeaders: string[];
-  /** Key data patterns detected */
   dataPatterns: string[];
-  /** Extracted KPIs */
   kpis: ExtractedKPIs;
+  /** How the file content was extracted */
+  extractionMethod: 'native-pdf' | 'ocr-pdf' | 'spreadsheet' | 'filename-only';
 }
 
 interface PropertyFolder {
@@ -101,20 +107,17 @@ interface ScanSummary {
 }
 
 // ─── Content-first classification rules ──────────────────────────────────────
-// Each rule checks the OCR markdown content for specific patterns
 
 interface ContentRule {
-  /** What to look for in the markdown/tables */
   contentPatterns: RegExp[];
-  /** What to look for in table headers */
   tableHeaderPatterns?: RegExp[];
   reportType: string;
   category: string;
-  priority: number; // higher = matched first
+  priority: number;
 }
 
 const CONTENT_RULES: ContentRule[] = [
-  // ── Revenue & Performance ────────────────────────────────────────────
+  // Revenue & Performance
   { contentPatterns: [/Revenue Flash/i, /Occ\s*%.*ADR.*RevPAR/i], reportType: 'Revenue Flash', category: 'Revenue', priority: 100 },
   { contentPatterns: [/Revenue Activity/i], tableHeaderPatterns: [/Rate Plan/i], reportType: 'Revenue Activity', category: 'Revenue', priority: 90 },
   { contentPatterns: [/Revenue Summary/i], tableHeaderPatterns: [/Room.*Tax.*Phone/i], reportType: 'Revenue Summary', category: 'Revenue', priority: 90 },
@@ -129,7 +132,7 @@ const CONTENT_RULES: ContentRule[] = [
   { contentPatterns: [/PTD.*YTD.*Management|PTDYTDMNGMNT/i], reportType: 'PTD/YTD Management', category: 'Revenue', priority: 85 },
   { contentPatterns: [/Combined Sales/i], reportType: 'Combined Sales', category: 'Revenue', priority: 80 },
 
-  // ── Night Audit / Performance ────────────────────────────────────────
+  // Night Audit / Performance
   { contentPatterns: [/Hotel Statistics/i], tableHeaderPatterns: [/Room Statistics|Performance Statistics/i], reportType: 'Hotel Statistics', category: 'Night Audit', priority: 95 },
   { contentPatterns: [/Manager'?s?\s*Flash/i], reportType: 'Manager Flash', category: 'Night Audit', priority: 90 },
   { contentPatterns: [/Statistical Recap|Daily Report.*Statistical/i], tableHeaderPatterns: [/Occupancy\s*%.*ADR/i], reportType: 'Daily Statistical Recap', category: 'Night Audit', priority: 90 },
@@ -139,7 +142,7 @@ const CONTENT_RULES: ContentRule[] = [
   { contentPatterns: [/Shift Reconciliation/i], reportType: 'Shift Reconciliation', category: 'Night Audit', priority: 80 },
   { contentPatterns: [/Grata DSR/i], reportType: 'Grata DSR', category: 'Night Audit', priority: 80 },
 
-  // ── Room Operations ──────────────────────────────────────────────────
+  // Room Operations
   { contentPatterns: [/All Rooms/i], tableHeaderPatterns: [/Room.*Number.*Type.*OCC.*STATUS/i], reportType: 'All Rooms Report', category: 'Room Operations', priority: 85 },
   { contentPatterns: [/Room Detail/i], reportType: 'Room Detail', category: 'Room Operations', priority: 80 },
   { contentPatterns: [/Room Status/i], reportType: 'Room Status Report', category: 'Room Operations', priority: 80 },
@@ -151,17 +154,17 @@ const CONTENT_RULES: ContentRule[] = [
   { contentPatterns: [/Occupancy Forecast|History.*Forecast/i], reportType: 'Occupancy Forecast', category: 'Room Operations', priority: 85 },
   { contentPatterns: [/Downtime Report/i], reportType: 'Downtime Report', category: 'Room Operations', priority: 80 },
 
-  // ── Maintenance ──────────────────────────────────────────────────────
+  // Maintenance
   { contentPatterns: [/Engineering Flash|Engineer Flash/i], reportType: 'Engineering Flash', category: 'Maintenance', priority: 80 },
   { contentPatterns: [/Non.?Rentable|Maintenance/i], reportType: 'Maintenance Report', category: 'Maintenance', priority: 75 },
 
-  // ── Reservations ─────────────────────────────────────────────────────
+  // Reservations
   { contentPatterns: [/Reservation.*(Activity|Entered|Report)|Reservations by Operator/i], reportType: 'Reservation Report', category: 'Reservations', priority: 80 },
   { contentPatterns: [/No Show/i], reportType: 'No Show Report', category: 'Reservations', priority: 80 },
   { contentPatterns: [/Denial Tracking/i], reportType: 'Denial Tracking', category: 'Reservations', priority: 80 },
   { contentPatterns: [/Special Services/i], reportType: 'Special Services', category: 'Reservations', priority: 75 },
 
-  // ── Accounting ───────────────────────────────────────────────────────
+  // Accounting
   { contentPatterns: [/Aging.*Report|Account\s*Aging|Receivables?\s*Aging|City Ledger.*Aging/i], tableHeaderPatterns: [/Current.*30.*60.*90/i], reportType: 'Aging Report', category: 'Accounting', priority: 90 },
   { contentPatterns: [/Aging.*Type/i], reportType: 'Aging By Type', category: 'Accounting', priority: 85 },
   { contentPatterns: [/Direct Bill Aging/i], reportType: 'Direct Bill Aging', category: 'Accounting', priority: 85 },
@@ -174,7 +177,7 @@ const CONTENT_RULES: ContentRule[] = [
   { contentPatterns: [/Closed Folio/i], reportType: 'Closed Folio Balances', category: 'Accounting', priority: 80 },
   { contentPatterns: [/ROTB/i], reportType: 'ROTB Report', category: 'Accounting', priority: 75 },
 
-  // ── Payments ─────────────────────────────────────────────────────────
+  // Payments
   { contentPatterns: [/Credit Card.*(Transaction|Reconcil|Batch)/i], tableHeaderPatterns: [/CC\s*#|Auth\s*#|Batch/i], reportType: 'Credit Card Transactions', category: 'Payments', priority: 85 },
   { contentPatterns: [/Credit Card.*Rebate/i], reportType: 'Credit Card Rebate', category: 'Payments', priority: 80 },
   { contentPatterns: [/Credit Card.*Activity/i], reportType: 'Credit Card Activity', category: 'Payments', priority: 80 },
@@ -182,7 +185,7 @@ const CONTENT_RULES: ContentRule[] = [
   { contentPatterns: [/Payment Activity/i], reportType: 'Payment Activity', category: 'Payments', priority: 80 },
   { contentPatterns: [/Negative Posting/i], reportType: 'Negative Postings', category: 'Payments', priority: 80 },
 
-  // ── Cash & Deposits ──────────────────────────────────────────────────
+  // Cash & Deposits
   { contentPatterns: [/Operator.*Transaction/i], reportType: 'Operator Transactions', category: 'Cash & Deposits', priority: 80 },
   { contentPatterns: [/Operator.*Cash.*Out|Cash Out/i], reportType: 'Cash Out', category: 'Cash & Deposits', priority: 80 },
   { contentPatterns: [/Daily Cash Out/i], reportType: 'Daily Cash Out', category: 'Cash & Deposits', priority: 80 },
@@ -190,13 +193,13 @@ const CONTENT_RULES: ContentRule[] = [
   { contentPatterns: [/Cash Drop/i], reportType: 'Cash Drop Log', category: 'Cash & Deposits', priority: 80 },
   { contentPatterns: [/Deposit.*(List|Report|Master|Ledger)|Daily Deposit|Bank Deposit/i], reportType: 'Deposit Report', category: 'Cash & Deposits', priority: 75 },
 
-  // ── Tax ──────────────────────────────────────────────────────────────
+  // Tax
   { contentPatterns: [/Room.*Tax.*List/i], reportType: 'Room & Tax Listing', category: 'Tax', priority: 85 },
   { contentPatterns: [/Tax.Exempt/i], reportType: 'Tax Exempt', category: 'Tax', priority: 80 },
   { contentPatterns: [/Sales Tax Liability/i], reportType: 'Sales Tax Liability', category: 'Tax', priority: 80 },
   { contentPatterns: [/Tax Report/i], reportType: 'Tax Report', category: 'Tax', priority: 75 },
 
-  // ── Transaction Logs ─────────────────────────────────────────────────
+  // Transaction Logs
   { contentPatterns: [/Daily Transaction Log|Transaction Log/i], reportType: 'Daily Transaction Log', category: 'Transaction Logs', priority: 80 },
   { contentPatterns: [/All Transactions/i], tableHeaderPatterns: [/Transaction.*Code|Charge.*Type/i], reportType: 'All Transactions', category: 'Transaction Logs', priority: 80 },
   { contentPatterns: [/All Charges/i], reportType: 'All Charges', category: 'Transaction Logs', priority: 80 },
@@ -204,7 +207,6 @@ const CONTENT_RULES: ContentRule[] = [
   { contentPatterns: [/Adjust|Void/i], reportType: 'Adjustments / Voids', category: 'Transaction Logs', priority: 60 },
 ];
 
-// Sort by priority descending
 const SORTED_RULES = [...CONTENT_RULES].sort((a, b) => b.priority - a.priority);
 
 // ─── Property matching ───────────────────────────────────────────────────────
@@ -278,7 +280,6 @@ function extractDateFromName(name: string): string | null {
   return null;
 }
 
-/** Classify from OCR content — the main intelligence */
 function classifyFromContent(
   markdown: string,
   tableContents: string[],
@@ -288,14 +289,12 @@ function classifyFromContent(
   const dataPatterns: string[] = [];
   const tableHeaders: string[] = [];
 
-  // Extract table header names
   const headerMatches = fullText.matchAll(/\|\s*([A-Z][A-Za-z\s&\/]+)\s*\|/g);
   for (const m of headerMatches) {
     const h = m[1]!.trim();
     if (h.length > 3 && h.length < 50 && !tableHeaders.includes(h)) tableHeaders.push(h);
   }
 
-  // Detect data patterns
   if (/Occ(upancy)?\s*%/i.test(fullText)) dataPatterns.push('occupancy');
   if (/\bADR\b/i.test(fullText)) dataPatterns.push('adr');
   if (/RevPAR/i.test(fullText)) dataPatterns.push('revpar');
@@ -310,11 +309,9 @@ function classifyFromContent(
   if (/Deposit/i.test(fullText)) dataPatterns.push('deposit');
   if (/Maintenance|Non.?Rentable/i.test(fullText)) dataPatterns.push('maintenance');
 
-  // Match against content rules (priority-sorted)
   for (const rule of SORTED_RULES) {
     const contentMatch = rule.contentPatterns.some((p) => p.test(fullText));
     if (contentMatch) {
-      // If there's a table header pattern, check that too for higher confidence
       if (rule.tableHeaderPatterns) {
         const tableMatch = rule.tableHeaderPatterns.some((p) => p.test(fullText));
         if (tableMatch) {
@@ -325,7 +322,6 @@ function classifyFromContent(
     }
   }
 
-  // Fallback: try filename
   for (const rule of SORTED_RULES) {
     if (rule.contentPatterns.some((p) => p.test(fileName))) {
       return { reportType: rule.reportType, category: rule.category, confidence: 0.6, dataPatterns, tableHeaders };
@@ -335,37 +331,34 @@ function classifyFromContent(
   return { reportType: 'Unknown', category: 'Uncategorized', confidence: 0.2, dataPatterns, tableHeaders };
 }
 
-/** Extract KPIs from OCR markdown text */
 function extractKPIs(markdown: string): ExtractedKPIs {
   const kpis: ExtractedKPIs = {};
 
-  // ADR
   const adrMatch = markdown.match(/ADR[^|]*?\$?\s*([\d,]+\.?\d*)/i);
   if (adrMatch) { const v = parseFloat(adrMatch[1]!.replace(/,/g, '')); if (v >= 30 && v <= 1000) kpis.adr = v; }
 
-  // Occupancy %
   const occMatch = markdown.match(/Occupancy[^|]*?([\d.]+)\s*%/i) || markdown.match(/Occ\s*%[^|]*?([\d.]+)/i);
   if (occMatch) { const v = parseFloat(occMatch[1]!); if (v > 0 && v <= 100) kpis.occupancyPct = v; }
 
-  // RevPAR
   const revparMatch = markdown.match(/RevPAR[^|]*?\$?\s*([\d,]+\.?\d*)/i);
   if (revparMatch) { const v = parseFloat(revparMatch[1]!.replace(/,/g, '')); if (v > 0 && v < 1000) kpis.revpar = v; }
 
-  // Rooms sold
   const soldMatch = markdown.match(/ROOM\s*SOLD[^|]*?([\d,]+)/i);
   if (soldMatch) kpis.roomsSold = parseInt(soldMatch[1]!.replace(/,/g, ''), 10);
 
-  // OOO Rooms
   const oooMatch = markdown.match(/OUT OF ORDER[^|]*?([\d,]+)/i);
   if (oooMatch) kpis.oooRooms = parseInt(oooMatch[1]!.replace(/,/g, ''), 10);
 
   return kpis;
 }
 
-// ─── OCR processing ─────────────────────────────────────────────────────────
+// ─── OCR processing (using OCR-V1 locally) ──────────────────────────────────
 
-async function processFileWithOCR(
-  client: Mistral,
+// No page limit — process all pages like OCR-V1 does
+const NVIDIA_API_KEY = process.env.NVIDIA_API_KEY || '';
+
+async function processFileWithLocalOCR(
+  pool: TesseractWorkerPool,
   filePath: string,
   rootPath: string,
   fileName: string,
@@ -382,85 +375,114 @@ async function processFileWithOCR(
     fileSizeBytes: sizeBytes,
     adrNumber: null,
     error: null,
+    extractionMethod: 'filename-only',
   };
 
-  // Non-PDF files: classify by filename only
+  // Spreadsheets: direct read
+  if (['.xlsx', '.xls', '.csv', '.ods', '.tsv'].includes(ext)) {
+    try {
+      const result = extractSpreadsheet(filePath);
+      const markdown = result.totalText;
+      const { reportType, category, confidence, dataPatterns, tableHeaders } = classifyFromContent(markdown, [], fileName);
+      const kpis = extractKPIs(markdown);
+      return {
+        ...base,
+        reportType, reportTypeCategory: category, confidence,
+        ocrPageCount: 0, contentPreview: markdown.substring(0, 500),
+        tableHeaders, dataPatterns, kpis,
+        adrNumber: kpis.adr ? kpis.adr.toFixed(2) : null,
+        fullText: markdown,
+        extractionMethod: 'spreadsheet' as const,
+      };
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      const { reportType, category, confidence, dataPatterns, tableHeaders } = classifyFromContent('', [], fileName);
+      return { ...base, reportType, reportTypeCategory: category, confidence: Math.min(confidence, 0.5), error: errorMsg, ocrPageCount: 0, contentPreview: '', tableHeaders, dataPatterns, kpis: {}, extractionMethod: 'spreadsheet' as const };
+    }
+  }
+
+  // Non-PDF/spreadsheet: classify by filename only
   if (ext !== '.pdf') {
     const { reportType, category, confidence, dataPatterns, tableHeaders } = classifyFromContent('', [], fileName);
     return { ...base, reportType, reportTypeCategory: category, confidence, ocrPageCount: 0, contentPreview: '', tableHeaders, dataPatterns, kpis: {} };
   }
 
-  // PDF: send to Mistral OCR with retry on rate limit
+  // PDF: try native text extraction first, fallback to Tesseract OCR
   try {
-    let uploaded: { id: string } | undefined;
-    let result: any;
+    let markdown = '';
+    let ocrPageCount = 0;
+    let method: 'native' | 'ocr' = 'native';
 
-    for (let attempt = 0; attempt < 5; attempt++) {
+    // Try native text extraction
+    let nativeResult: Awaited<ReturnType<typeof extractPdfText>> | null = null;
+    try {
+      nativeResult = await extractPdfText(filePath);
+    } catch {
+      // Fall through to OCR
+    }
+
+    if (nativeResult?.isTextBased) {
+      markdown = nativeResult.pages.map((p) => p.text).join('\n\n');
+      ocrPageCount = nativeResult.pages.length;
+      method = 'native';
+    } else {
+      // Scanned PDF: use NVIDIA NIM OCR if available, else Tesseract
+      method = 'ocr';
       try {
-        if (!uploaded) {
-          uploaded = await client.files.upload({
-            file: await openAsBlob(filePath),
-            purpose: 'ocr' as any,
-          });
-        }
+        const pdfPages = await extractPdfPages(filePath, 1.5);
 
-        result = await client.ocr.process({
-          model: 'mistral-ocr-latest',
-          document: { type: 'file', fileId: uploaded.id },
-          tableFormat: 'markdown',
-          pages: [0, 1],
-        });
-        break; // success
-      } catch (retryErr: any) {
-        const msg = retryErr?.message ?? String(retryErr);
-        if (msg.includes('429') && attempt < 4) {
-          const wait = (attempt + 1) * 3000; // 3s, 6s, 9s, 12s
-          await new Promise((r) => setTimeout(r, wait));
-          continue;
+        if (pdfPages.length > 0) {
+          if (NVIDIA_API_KEY) {
+            // NVIDIA NIM OCR (cloud, ~96% accuracy)
+            const ocrTexts: string[] = [];
+            for (const page of pdfPages) {
+              const ocr = await nvidiaOcrRecognize(page.imageBuffer, {
+                apiKey: NVIDIA_API_KEY,
+                mergeLevel: 'paragraph',
+              });
+              ocrTexts.push(ocr.text);
+            }
+            markdown = ocrTexts.map((text, i) =>
+              pdfPages.length > 1 ? `--- Page ${pdfPages[i]!.pageNumber} ---\n${text}` : text
+            ).join('\n\n');
+          } else {
+            // Tesseract.js fallback (local, no API key needed)
+            const preprocessed = await Promise.all(
+              pdfPages.map((p) => preprocessImage(p.imageBuffer))
+            );
+            const ocrResults = await pool.recognizeBatch(preprocessed);
+            markdown = ocrResults.map((r, i) => {
+              const text = postprocessText(r.text);
+              return pdfPages.length > 1 ? `--- Page ${pdfPages[i]!.pageNumber} ---\n${text}` : text;
+            }).join('\n\n');
+          }
+          ocrPageCount = pdfPages.length;
         }
-        throw retryErr;
+      } catch (ocrErr) {
+        const errorMsg = ocrErr instanceof Error ? ocrErr.message : String(ocrErr);
+        const { reportType, category, confidence, dataPatterns, tableHeaders } = classifyFromContent('', [], fileName);
+        return { ...base, reportType, reportTypeCategory: category, confidence: Math.min(confidence, 0.5), error: `OCR failed: ${errorMsg}`, ocrPageCount: 0, contentPreview: '', tableHeaders, dataPatterns, kpis: {}, extractionMethod: 'ocr-pdf' as const };
       }
     }
-    if (!result) throw new Error('OCR failed after retries');
 
-    const pages = result.pages ?? [];
-    const markdown = pages.map((p) => p.markdown ?? '').join('\n');
-    const tableContents = pages.flatMap((p) =>
-      (p.tables ?? []).map((t) => (t as any).content ?? (t as any).markdownRepresentation ?? ''),
-    );
-
-    const { reportType, category, confidence, dataPatterns, tableHeaders } = classifyFromContent(markdown, tableContents, fileName);
-    const kpis = extractKPIs(markdown + '\n' + tableContents.join('\n'));
+    const { reportType, category, confidence, dataPatterns, tableHeaders } = classifyFromContent(markdown, [], fileName);
+    const kpis = extractKPIs(markdown);
     const adrNumber = kpis.adr ? kpis.adr.toFixed(2) : null;
     const contentPreview = markdown.substring(0, 500);
 
     return {
-      ...base,
-      reportType,
-      reportTypeCategory: category,
-      confidence,
-      adrNumber,
-      ocrPageCount: result.usageInfo?.pagesProcessed ?? pages.length,
-      contentPreview,
-      tableHeaders,
-      dataPatterns,
-      kpis,
+      ...base, reportType, reportTypeCategory: category, confidence,
+      adrNumber, ocrPageCount, contentPreview, tableHeaders, dataPatterns, kpis,
+      fullText: markdown,
+      extractionMethod: method === 'native' ? 'native-pdf' as const : 'ocr-pdf' as const,
     };
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : String(err);
-    // Fallback to filename classification on error
     const { reportType, category, confidence, dataPatterns, tableHeaders } = classifyFromContent('', [], fileName);
     return {
-      ...base,
-      reportType,
-      reportTypeCategory: category,
-      confidence: Math.min(confidence, 0.5),
-      error: errorMsg,
-      ocrPageCount: 0,
-      contentPreview: '',
-      tableHeaders,
-      dataPatterns,
-      kpis: {},
+      ...base, reportType, reportTypeCategory: category,
+      confidence: Math.min(confidence, 0.5), error: errorMsg,
+      ocrPageCount: 0, contentPreview: '', tableHeaders, dataPatterns, kpis: {},
     };
   }
 }
@@ -492,7 +514,6 @@ async function processWithConcurrency<T, R>(
 
 // ─── Main scan ───────────────────────────────────────────────────────────────
 
-/** Progress file path — the UI polls this */
 const PROGRESS_FILE = path.join(process.cwd(), 'apps', 'web', 'public', 'data', 'scan-progress.json');
 
 interface ScanProgress {
@@ -507,20 +528,39 @@ interface ScanProgress {
   elapsedMs: number;
   currentFile: string;
   errorMessage?: string;
+  /** Per-type estimates (counted at start) */
+  totalPdfEstimate: number;
+  totalSpreadsheetEstimate: number;
+  /** Categorized processed counts */
+  nativePdfCount: number;
+  ocrPdfCount: number;
+  spreadsheetCount: number;
 }
 
 function writeProgress(progress: ScanProgress): void {
-  try { fs.writeFileSync(PROGRESS_FILE, JSON.stringify(progress)); } catch { /* ignore */ }
+  try {
+    const dir = path.dirname(PROGRESS_FILE);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    // Atomic write: write to temp file then rename to avoid partial reads
+    const tmpFile = PROGRESS_FILE + '.tmp';
+    fs.writeFileSync(tmpFile, JSON.stringify(progress));
+    fs.renameSync(tmpFile, PROGRESS_FILE);
+  } catch { /* ignore */ }
 }
 
-async function scanFolder(rootPath: string, concurrency: number): Promise<ScanSummary> {
+async function scanFolder(rootPath: string, concurrency: number, numWorkers: number): Promise<ScanSummary> {
   const startTime = Date.now();
   const startedAt = new Date().toISOString();
-  const client = new Mistral({ apiKey: MISTRAL_API_KEY });
+
+  // Initialize Tesseract worker pool
+  const pool = new TesseractWorkerPool({ numWorkers, language: 'eng' });
+  let poolInitialized = false;
+
   const dateFolders: DateFolder[] = [];
   const flatResults: FlatResult[] = [];
   let totalFiles = 0, totalPdfs = 0, totalParsed = 0, totalErrors = 0, totalWithAdr = 0;
   let globalFilesProcessed = 0;
+  let nativePdfCount = 0, ocrPdfCount = 0, spreadsheetCount = 0;
   const categoryCounts: Record<string, number> = {};
   const reportTypeCounts: Record<string, number> = {};
   const propertyCounts: Record<string, number> = {};
@@ -533,22 +573,45 @@ async function scanFolder(rootPath: string, concurrency: number): Promise<ScanSu
   const topEntries = fs.readdirSync(scanBase, { withFileTypes: true });
   const dateDirs = topEntries.filter((e) => e.isDirectory() && /^\d{8}$/.test(e.name));
 
-  // Estimate total file count for progress
+  // Estimate total file count (only valid extensions), split by type
+  const PDF_EXTS = new Set(['.pdf']);
+  const SPREADSHEET_EXTS = new Set(['.xlsx', '.xls', '.csv', '.ods', '.tsv']);
+  const VALID_EXTS = new Set([...PDF_EXTS, ...SPREADSHEET_EXTS]);
   let totalFilesEstimate = 0;
+  let totalPdfEstimate = 0;
+  let totalSpreadsheetEstimate = 0;
+
   for (const dd of dateDirs) {
     const dp = path.join(scanBase, dd.name);
     try {
       const entries = fs.readdirSync(dp, { withFileTypes: true });
-      totalFilesEstimate += entries.filter((e) => e.isFile()).length;
+      for (const e of entries.filter((e) => e.isFile())) {
+        const ext = path.extname(e.name).toLowerCase();
+        if (!VALID_EXTS.has(ext)) continue;
+        totalFilesEstimate++;
+        if (PDF_EXTS.has(ext)) totalPdfEstimate++;
+        else if (SPREADSHEET_EXTS.has(ext)) totalSpreadsheetEstimate++;
+      }
       for (const sub of entries.filter((e) => e.isDirectory())) {
-        try { totalFilesEstimate += fs.readdirSync(path.join(dp, sub.name)).length; } catch { /* skip */ }
+        try {
+          const subFiles = fs.readdirSync(path.join(dp, sub.name));
+          for (const f of subFiles) {
+            const ext = path.extname(f).toLowerCase();
+            if (!VALID_EXTS.has(ext)) continue;
+            totalFilesEstimate++;
+            if (PDF_EXTS.has(ext)) totalPdfEstimate++;
+            else if (SPREADSHEET_EXTS.has(ext)) totalSpreadsheetEstimate++;
+          }
+        } catch { /* skip */ }
       }
     } catch { /* skip */ }
   }
 
-  console.log(`  Found ${dateDirs.length} date folders (~${totalFilesEstimate} files)\n`);
+  const ocrEngine = NVIDIA_API_KEY ? 'NVIDIA NIM' : `Tesseract.js (${numWorkers} workers)`;
+  console.log(`  Found ${dateDirs.length} date folders (~${totalFilesEstimate} files)`);
+  console.log(`  OCR Engine: ${ocrEngine}\n`);
 
-  writeProgress({ status: 'scanning', startedAt, currentDate: '', currentDateIndex: 0, totalDateFolders: dateDirs.length, filesProcessed: 0, filesInCurrentDate: 0, totalFilesEstimate, elapsedMs: 0, currentFile: '' });
+  writeProgress({ status: 'scanning', startedAt, currentDate: '', currentDateIndex: 0, totalDateFolders: dateDirs.length, filesProcessed: 0, filesInCurrentDate: 0, totalFilesEstimate, elapsedMs: 0, currentFile: '', totalPdfEstimate, totalSpreadsheetEstimate, nativePdfCount: 0, ocrPdfCount: 0, spreadsheetCount: 0 });
 
   let dateIndex = 0;
   for (const dateDir of dateDirs.sort((a, b) => a.name.localeCompare(b.name))) {
@@ -563,7 +626,6 @@ async function scanFolder(rootPath: string, concurrency: number): Promise<ScanSu
     const propertyFolders: PropertyFolder[] = [];
     const standaloneFiles: ScannedFile[] = [];
 
-    // Collect all files to process in this date folder
     interface FileJob { filePath: string; fileName: string; ext: string; size: number; propLabel: string | null; propFolderName: string }
     const jobs: FileJob[] = [];
 
@@ -594,17 +656,24 @@ async function scanFolder(rootPath: string, concurrency: number): Promise<ScanSu
       }
     }
 
+    // Initialize pool lazily (only when we have PDFs that might need OCR)
+    const hasPdfs = jobs.some((j) => j.ext === '.pdf');
+    if (hasPdfs && !poolInitialized) {
+      await pool.initialize();
+      poolInitialized = true;
+    }
+
     // Process all files with concurrency
     const results = await processWithConcurrency(
       jobs,
       async (job) => {
-        const file = await processFileWithOCR(client, job.filePath, rootPath, job.fileName, job.ext, job.size);
+        const file = await processFileWithLocalOCR(pool, job.filePath, rootPath, job.fileName, job.ext, job.size);
         return { file, job };
       },
       concurrency,
       (done, total) => {
         globalFilesProcessed++;
-        if (done % 10 === 0 || done === total) {
+        if (done % 5 === 0 || done === total) {
           process.stdout.write(`\r    ${done}/${total} files...`);
           writeProgress({
             status: 'scanning',
@@ -617,6 +686,11 @@ async function scanFolder(rootPath: string, concurrency: number): Promise<ScanSu
             totalFilesEstimate,
             elapsedMs: Date.now() - startTime,
             currentFile: `${normalizedDate} (${done}/${total})`,
+            totalPdfEstimate,
+            totalSpreadsheetEstimate,
+            nativePdfCount,
+            ocrPdfCount,
+            spreadsheetCount,
           });
         }
       },
@@ -632,6 +706,11 @@ async function scanFolder(rootPath: string, concurrency: number): Promise<ScanSu
       if (file.error) totalErrors++;
       else if (job.ext === '.pdf') totalParsed++;
       if (file.adrNumber) totalWithAdr++;
+
+      // Track extraction method counts
+      if (file.extractionMethod === 'native-pdf') nativePdfCount++;
+      else if (file.extractionMethod === 'ocr-pdf') ocrPdfCount++;
+      else if (file.extractionMethod === 'spreadsheet') spreadsheetCount++;
 
       categoryCounts[file.reportTypeCategory] = (categoryCounts[file.reportTypeCategory] ?? 0) + 1;
       reportTypeCounts[file.reportType] = (reportTypeCounts[file.reportType] ?? 0) + 1;
@@ -675,12 +754,16 @@ async function scanFolder(rootPath: string, concurrency: number): Promise<ScanSu
       totalProperties: propertyFolders.length,
     });
 
-    console.log(`    → ${propertyFolders.length} properties, ${results.length} files`);
+    console.log(`    -> ${propertyFolders.length} properties, ${results.length} files`);
+  }
+
+  // Cleanup
+  if (poolInitialized) {
+    await pool.terminate();
   }
 
   const execTime = Date.now() - startTime;
 
-  // Write final progress
   writeProgress({
     status: 'done',
     startedAt,
@@ -692,6 +775,11 @@ async function scanFolder(rootPath: string, concurrency: number): Promise<ScanSu
     totalFilesEstimate: totalFiles,
     elapsedMs: execTime,
     currentFile: '',
+    totalPdfEstimate,
+    totalSpreadsheetEstimate,
+    nativePdfCount,
+    ocrPdfCount,
+    spreadsheetCount,
   });
 
   return {
@@ -717,23 +805,42 @@ async function main(): Promise<void> {
   const outIdx = args.indexOf('--out');
   const outputPath = outIdx !== -1 && args[outIdx + 1] ? args[outIdx + 1]! : path.join(process.cwd(), 'apps', 'web', 'public', 'data', 'output.json');
   const concIdx = args.indexOf('--concurrency');
-  const concurrency = concIdx !== -1 && args[concIdx + 1] ? parseInt(args[concIdx + 1]!, 10) : 5;
+  const concurrency = concIdx !== -1 && args[concIdx + 1] ? parseInt(args[concIdx + 1]!, 10) : 3;
+  const workIdx = args.indexOf('--workers');
+  const numWorkers = workIdx !== -1 && args[workIdx + 1] ? parseInt(args[workIdx + 1]!, 10) : Math.min(os.cpus().length, 4);
 
   if (!scanPath) {
-    console.error('Usage: pnpm tsx scripts/scanWithOCR.ts <folder-path> [--out <path>] [--concurrency <n>]');
+    console.log(`
+  Local OCR Content Scanner (Tesseract.js)
+  ${'='.repeat(50)}
+
+  Usage:
+    pnpm tsx scripts/scanWithOCR-local.ts <folder-path> [options]
+
+  Options:
+    --out <path>         Output JSON path (default: apps/web/public/data/output.json)
+    --concurrency <n>    Files processed in parallel (default: 3)
+    --workers <n>        Tesseract worker threads (default: min(CPU cores, 4))
+
+  Strategy:
+    1. Spreadsheets (XLSX/CSV/ODS) -> direct read (instant)
+    2. Text-based PDFs -> native text extraction (instant, 100% accurate)
+    3. Scanned PDFs/images -> Tesseract.js OCR (local, no API key needed)
+    `);
     process.exit(1);
   }
 
   const resolvedPath = path.resolve(scanPath);
   if (!fs.existsSync(resolvedPath)) { console.error(`Path does not exist: ${resolvedPath}`); process.exit(1); }
 
-  console.log(`\n  Mistral OCR Content Scanner`);
+  console.log(`\n  Local OCR Content Scanner`);
   console.log(`  ${'─'.repeat(50)}`);
   console.log(`  Root:        ${resolvedPath}`);
   console.log(`  Output:      ${outputPath}`);
-  console.log(`  Concurrency: ${concurrency}\n`);
+  console.log(`  Concurrency: ${concurrency}`);
+  console.log(`  Workers:     ${numWorkers}\n`);
 
-  const summary = await scanFolder(resolvedPath, concurrency);
+  const summary = await scanFolder(resolvedPath, concurrency, numWorkers);
 
   const outputDir = path.dirname(outputPath);
   if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
