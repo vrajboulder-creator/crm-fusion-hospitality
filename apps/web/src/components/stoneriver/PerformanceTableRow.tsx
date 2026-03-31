@@ -5,7 +5,8 @@
 
 import { useState } from 'react';
 import { clsx } from 'clsx';
-import { fmtCurrency, fmtPct, fmtNumber, fmtVariance, fmtDate } from '../../lib/formatters';
+import { fmtCurrency, fmtRate, fmtPct, fmtNumber, fmtVariance, fmtDate } from '../../lib/formatters';
+import { usePdfSearch } from './PdfSearchContext';
 import type { DailyHotelPerformance, SparklinePoint } from './types';
 import type { Property } from '../../constants/stoneriver-properties';
 
@@ -13,6 +14,9 @@ interface RevenueFlashRowProps {
   property: Property;
   data: DailyHotelPerformance | null;
   sparklinePoints: SparklinePoint[];
+  showDay?: boolean;
+  showMtd?: boolean;
+  showYtd?: boolean;
 }
 
 const cell = 'px-1.5 py-1 text-right tabular-nums text-[11px] text-[#1a1a1a]';
@@ -23,6 +27,27 @@ function occColor(occ: number | null): string {
   if (occ >= 70) return 'text-[#16a34a] font-semibold';
   if (occ >= 50) return 'text-[#ca8a04] font-semibold';
   return 'text-[#dc2626] font-semibold';
+}
+
+function adrColor(adr: number | null): string {
+  if (adr == null) return 'text-[#9ca3af]';
+  if (adr >= 130) return 'text-[#7c3aed] font-semibold';
+  if (adr >= 100) return 'text-[#2563eb] font-semibold';
+  return 'text-[#1a1a1a]';
+}
+
+function revparColor(revpar: number | null): string {
+  if (revpar == null) return 'text-[#9ca3af]';
+  if (revpar >= 120) return 'text-[#7c3aed] font-semibold';
+  if (revpar >= 80) return 'text-[#2563eb]';
+  return 'text-[#1a1a1a]';
+}
+
+function revenueColor(rev: number | null): string {
+  if (rev == null) return 'text-[#9ca3af]';
+  if (rev >= 15000) return 'text-[#16a34a] font-semibold';
+  if (rev >= 10000) return 'text-[#2563eb] font-medium';
+  return 'text-[#1a1a1a]';
 }
 
 function varianceColor(current: number | null, prior: number | null): string {
@@ -65,7 +90,22 @@ function ExpandedDetail({ data, sparklinePoints }: { data: DailyHotelPerformance
   );
 }
 
-export function RevenueFlashRow({ property, data, sparklinePoints }: RevenueFlashRowProps) {
+/** Wrapper that makes a cell value clickable → searches PDFs for that value */
+function ClickableValue({ value, formatted, className }: { value: number | null; formatted: string; className?: string }) {
+  const { searchAndOpen } = usePdfSearch();
+  if (value == null) return <span className={className}>—</span>;
+  return (
+    <span
+      className={clsx(className, 'cursor-pointer hover:underline hover:decoration-dotted')}
+      onClick={(e) => { e.stopPropagation(); searchAndOpen(String(Math.round(value))); }}
+      title="Click to find in source PDFs"
+    >
+      {formatted}
+    </span>
+  );
+}
+
+export function RevenueFlashRow({ property, data, sparklinePoints, showDay = true, showMtd = true, showYtd = true }: RevenueFlashRowProps) {
   const [expanded, setExpanded] = useState(false);
   const d = data;
 
@@ -87,44 +127,62 @@ export function RevenueFlashRow({ property, data, sparklinePoints }: RevenueFlas
         </td>
 
         {/* ─── Day section ─── */}
-        <td className={`${cell} border-l border-[#e5e5e5] ${occColor(d?.occupancy_day ?? null)}`}>
-          {d?.occupancy_day != null ? fmtPct(d.occupancy_day) : '—'}
-        </td>
-        <td className={cell}>{d?.adr_day != null ? fmtCurrency(d.adr_day) : '—'}</td>
-        <td className={cell}>{d?.revpar_day != null ? fmtCurrency(d.revpar_day) : '—'}</td>
-        <td className={cell}>{d?.total_rooms_sold != null ? fmtNumber(d.total_rooms_sold) : '—'}</td>
-        <td className={`${cell} font-medium`}>{d?.revenue_day != null ? fmtCurrency(d.revenue_day) : '—'}</td>
-        <td className={clsx(cell, d?.ooo_rooms && d.ooo_rooms > 0 ? 'text-[#dc2626] font-semibold' : 'text-[#9ca3af]')}>
-          {d?.ooo_rooms != null ? d.ooo_rooms : '—'}
-        </td>
-        <td className={cellMuted}>{d?.py_revenue_day != null ? fmtCurrency(d.py_revenue_day) : '—'}</td>
-        <td className={`${cell} ${varianceColor(d?.revenue_day ?? null, d?.py_revenue_day ?? null)}`}>
-          {fmtVariance(d?.revenue_day ?? null, d?.py_revenue_day ?? null)}
-        </td>
+        {showDay && <>
+          <td className={`${cell} border-l border-[#e5e5e5] ${occColor(d?.occupancy_day ?? null)}`}>
+            {d?.occupancy_day != null ? fmtPct(d.occupancy_day) : '—'}
+          </td>
+          <td className={`${cell} ${adrColor(d?.adr_day ?? null)}`}>{d?.adr_day != null ? fmtRate(d.adr_day) : '—'}</td>
+          <td className={`${cell} ${revparColor(d?.revpar_day ?? null)}`}>{d?.revpar_day != null ? fmtRate(d.revpar_day) : '—'}</td>
+          <td className={cell}>{d?.total_rooms_sold != null ? fmtNumber(d.total_rooms_sold) : '—'}</td>
+          <td className={`${cell} ${revenueColor(d?.revenue_day ?? null)}`}>
+            <ClickableValue value={d?.revenue_day ?? null} formatted={d?.revenue_day != null ? fmtCurrency(d.revenue_day) : '—'} />
+          </td>
+          <td className={clsx(cell, d?.ooo_rooms && d.ooo_rooms > 0 ? 'text-[#dc2626] font-semibold' : 'text-[#9ca3af]')}>
+            {d?.ooo_rooms != null ? d.ooo_rooms : '—'}
+          </td>
+          <td className={cellMuted}>
+            <ClickableValue value={d?.py_revenue_day ?? null} formatted={d?.py_revenue_day != null ? fmtCurrency(d.py_revenue_day) : '—'} />
+          </td>
+          <td className={`${cell} ${varianceColor(d?.revenue_day ?? null, d?.py_revenue_day ?? null)}`}>
+            {fmtVariance(d?.revenue_day ?? null, d?.py_revenue_day ?? null)}
+          </td>
+        </>}
 
         {/* ─── MTD section ─── */}
-        <td className={`${cell} border-l border-[#d1d5db] ${occColor(d?.occupancy_mtd ?? null)}`}>
-          {d?.occupancy_mtd != null ? fmtPct(d.occupancy_mtd) : '—'}
-        </td>
-        <td className={cell}>{d?.adr_mtd != null ? fmtCurrency(d.adr_mtd) : '—'}</td>
-        <td className={cell}>{d?.revpar_mtd != null ? fmtCurrency(d.revpar_mtd) : '—'}</td>
-        <td className={`${cell} font-medium`}>{d?.revenue_mtd != null ? fmtCurrency(d.revenue_mtd) : '—'}</td>
-        <td className={cellMuted}>{d?.py_revenue_mtd != null ? fmtCurrency(d.py_revenue_mtd) : '—'}</td>
-        <td className={`${cell} ${varianceColor(d?.revenue_mtd ?? null, d?.py_revenue_mtd ?? null)}`}>
-          {fmtVariance(d?.revenue_mtd ?? null, d?.py_revenue_mtd ?? null)}
-        </td>
+        {showMtd && <>
+          <td className={`${cell} border-l border-[#d1d5db] ${occColor(d?.occupancy_mtd ?? null)}`}>
+            {d?.occupancy_mtd != null ? fmtPct(d.occupancy_mtd) : '—'}
+          </td>
+          <td className={`${cell} ${adrColor(d?.adr_mtd ?? null)}`}>{d?.adr_mtd != null ? fmtRate(d.adr_mtd) : '—'}</td>
+          <td className={`${cell} ${revparColor(d?.revpar_mtd ?? null)}`}>{d?.revpar_mtd != null ? fmtRate(d.revpar_mtd) : '—'}</td>
+          <td className={`${cell} ${revenueColor(d?.revenue_mtd ?? null)}`}>
+            <ClickableValue value={d?.revenue_mtd ?? null} formatted={d?.revenue_mtd != null ? fmtCurrency(d.revenue_mtd) : '—'} />
+          </td>
+          <td className={cellMuted}>
+            <ClickableValue value={d?.py_revenue_mtd ?? null} formatted={d?.py_revenue_mtd != null ? fmtCurrency(d.py_revenue_mtd) : '—'} />
+          </td>
+          <td className={`${cell} ${varianceColor(d?.revenue_mtd ?? null, d?.py_revenue_mtd ?? null)}`}>
+            {fmtVariance(d?.revenue_mtd ?? null, d?.py_revenue_mtd ?? null)}
+          </td>
+        </>}
 
         {/* ─── YTD section ─── */}
-        <td className={`${cell} border-l border-[#d1d5db] ${occColor(d?.occupancy_ytd ?? null)}`}>
-          {d?.occupancy_ytd != null ? fmtPct(d.occupancy_ytd) : '—'}
-        </td>
-        <td className={cell}>{d?.adr_ytd != null ? fmtCurrency(d.adr_ytd) : '—'}</td>
-        <td className={cell}>{d?.revpar_ytd != null ? fmtCurrency(d.revpar_ytd) : '—'}</td>
-        <td className={`${cell} font-medium`}>{d?.revenue_ytd != null ? fmtCurrency(d.revenue_ytd) : '—'}</td>
-        <td className={cellMuted}>{d?.py_revenue_ytd != null ? fmtCurrency(d.py_revenue_ytd) : '—'}</td>
-        <td className={`${cell} ${varianceColor(d?.revenue_ytd ?? null, d?.py_revenue_ytd ?? null)}`}>
-          {fmtVariance(d?.revenue_ytd ?? null, d?.py_revenue_ytd ?? null)}
-        </td>
+        {showYtd && <>
+          <td className={`${cell} border-l border-[#d1d5db] ${occColor(d?.occupancy_ytd ?? null)}`}>
+            {d?.occupancy_ytd != null ? fmtPct(d.occupancy_ytd) : '—'}
+          </td>
+          <td className={`${cell} ${adrColor(d?.adr_ytd ?? null)}`}>{d?.adr_ytd != null ? fmtRate(d.adr_ytd) : '—'}</td>
+          <td className={`${cell} ${revparColor(d?.revpar_ytd ?? null)}`}>{d?.revpar_ytd != null ? fmtRate(d.revpar_ytd) : '—'}</td>
+          <td className={`${cell} ${revenueColor(d?.revenue_ytd ?? null)}`}>
+            <ClickableValue value={d?.revenue_ytd ?? null} formatted={d?.revenue_ytd != null ? fmtCurrency(d.revenue_ytd) : '—'} />
+          </td>
+          <td className={cellMuted}>
+            <ClickableValue value={d?.py_revenue_ytd ?? null} formatted={d?.py_revenue_ytd != null ? fmtCurrency(d.py_revenue_ytd) : '—'} />
+          </td>
+          <td className={`${cell} ${varianceColor(d?.revenue_ytd ?? null, d?.py_revenue_ytd ?? null)}`}>
+            {fmtVariance(d?.revenue_ytd ?? null, d?.py_revenue_ytd ?? null)}
+          </td>
+        </>}
       </tr>
 
       {expanded && data && (

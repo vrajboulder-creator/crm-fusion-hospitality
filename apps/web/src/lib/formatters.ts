@@ -13,6 +13,18 @@ export const fmtCurrency = (value: number | string | null | undefined, decimals 
   }).format(n);
 };
 
+/** Format ADR/RevPAR with 1 decimal to match Revenue Flash PDF precision */
+export const fmtRate = (value: number | string | null | undefined): string => {
+  const n = Number(value);
+  if (isNaN(n)) return '—';
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: 1,
+    maximumFractionDigits: 1,
+  }).format(n);
+};
+
 export const fmtPct = (value: number | string | null | undefined, decimals = 1): string => {
   const n = Number(value);
   if (isNaN(n)) return '—';

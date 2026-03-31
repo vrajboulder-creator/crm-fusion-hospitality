@@ -12,7 +12,10 @@ import { ReportsPage } from './pages/ReportsPage';
 import { AlertsPage } from './pages/AlertsPage';
 import { TasksPage } from './pages/TasksPage';
 import { AdminPage } from './pages/AdminPage';
+import { PerformanceHubPage } from './pages/PerformanceHubPage';
 import { StoneriverDashboardPage } from './pages/StoneriverDashboardPage';
+import { FlashReportDashboardPage } from './pages/FlashReportDashboardPage';
+import { EngineeringDashboardPage } from './pages/EngineeringDashboardPage';
 import { DocumentsPage } from './pages/DocumentsPage';
 import { BatchReviewPage } from './pages/BatchReviewPage';
 import { ScannerPage } from './pages/ScannerPage';
@@ -46,7 +49,10 @@ export default function App() {
           <Route path="alerts" element={<AlertsPage />} />
           <Route path="tasks" element={<TasksPage />} />
           <Route path="admin" element={<AdminPage />} />
-          <Route path="stoneriver" element={<StoneriverDashboardPage />} />
+          <Route path="stoneriver" element={<PerformanceHubPage />} />
+          <Route path="stoneriver/revenue-flash" element={<StoneriverDashboardPage />} />
+          <Route path="stoneriver/flash-report" element={<FlashReportDashboardPage />} />
+          <Route path="stoneriver/engineering" element={<EngineeringDashboardPage />} />
           <Route path="scanner" element={<ScannerPage />} />
         </Route>
 

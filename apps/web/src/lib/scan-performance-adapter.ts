@@ -7,6 +7,7 @@
  */
 
 import type { DailyHotelPerformance, SparklinePoint } from '../components/stoneriver/types';
+import { ROOM_INVENTORY } from '../constants/stoneriver-properties';
 import { parseRevenueFlash, type PropertyPerformance } from './revenue-flash-parser';
 
 interface ScanResult {
@@ -98,6 +99,21 @@ function extractRevenueFlashData(
   return result;
 }
 
+/**
+ * Compute rooms available using actual inventory when known,
+ * falling back to rooms_sold / (occ% / 100) when not.
+ */
+function computeRoomsAvailable(propertyName: string, p: PropertyPerformance): number | null {
+  const inventory = ROOM_INVENTORY[propertyName];
+  if (inventory != null && p.ooo_rooms != null) {
+    return inventory - p.ooo_rooms;
+  }
+  if (p.total_rooms_sold != null && p.occupancy_day != null && p.occupancy_day > 0) {
+    return Math.round(p.total_rooms_sold / (p.occupancy_day / 100));
+  }
+  return null;
+}
+
 function toDailyPerf(
   propertyName: string,
   date: string,
@@ -122,7 +138,7 @@ function toDailyPerf(
     revpar_ytd: p.revpar_ytd,
 
     total_rooms_sold: p.total_rooms_sold,
-    total_rooms_available: null,
+    total_rooms_available: computeRoomsAvailable(propertyName, p),
     ooo_rooms: p.ooo_rooms,
 
     revenue_day: p.revenue_day,
