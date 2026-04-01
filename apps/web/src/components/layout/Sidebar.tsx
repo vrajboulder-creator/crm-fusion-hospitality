@@ -5,52 +5,27 @@
 import { NavLink, useNavigate } from 'react-router-dom';
 import {
   HomeIcon,
-  DocumentTextIcon,
-  BellAlertIcon,
-  ClipboardDocumentListIcon,
   CogIcon,
   ArrowRightStartOnRectangleIcon,
   BuildingOffice2Icon,
   ChartBarIcon,
   FolderOpenIcon,
-  InboxStackIcon,
   MagnifyingGlassCircleIcon,
 } from '@heroicons/react/24/outline';
 import { clsx } from 'clsx';
 import { useAuthStore } from '../../store/auth.store';
 import { api } from '../../lib/api-client';
-import { useQuery } from '@tanstack/react-query';
 
 const nav = [
   { label: 'Dashboard',   to: '/dashboard',   Icon: HomeIcon },
   { label: 'Performance', to: '/stoneriver',  Icon: ChartBarIcon },
-  { label: 'Reports',     to: '/reports',     Icon: DocumentTextIcon },
   { label: 'Documents',   to: '/documents',   Icon: FolderOpenIcon },
-  { label: 'Batch Review',to: '/batch-review',Icon: InboxStackIcon },
   { label: 'File Scanner',to: '/scanner',    Icon: MagnifyingGlassCircleIcon },
-  { label: 'Alerts',      to: '/alerts',      Icon: BellAlertIcon },
-  { label: 'Tasks',       to: '/tasks',       Icon: ClipboardDocumentListIcon },
 ];
-
-interface AlertCountData {
-  data: {
-    openAlerts: Array<{ severity: string; _count: { id: number } }>;
-  };
-}
 
 export function Sidebar() {
   const { user, clearUser } = useAuthStore();
   const navigate = useNavigate();
-
-  const { data: alertCounts } = useQuery<AlertCountData>({
-    queryKey: ['alert-counts'],
-    queryFn: () => api.get('/properties/portfolio/summary'),
-    refetchInterval: 60_000,
-  });
-
-  const criticalCount = alertCounts?.data?.openAlerts
-    ?.filter((a) => a.severity === 'critical')
-    .reduce((s, a) => s + a._count.id, 0) ?? 0;
 
   async function handleLogout() {
     await api.post('/auth/logout').catch(() => null);
@@ -90,11 +65,6 @@ export function Sidebar() {
           >
             <Icon className="w-4 h-4 shrink-0" />
             <span className="flex-1">{label}</span>
-            {label === 'Alerts' && criticalCount > 0 && (
-              <span className="flex items-center justify-center w-4 h-4 text-xs font-bold text-white bg-danger-500 rounded-sm">
-                {criticalCount > 9 ? '9+' : criticalCount}
-              </span>
-            )}
           </NavLink>
         ))}
 

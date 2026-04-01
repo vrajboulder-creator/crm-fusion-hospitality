@@ -29,6 +29,48 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // Resolve folder name to full path
+  if (req.url === '/api/v1/scanner/resolve-folder' && req.method === 'POST') {
+    let body = '';
+    req.on('data', (chunk) => { body += chunk.toString(); });
+    req.on('end', () => {
+      try {
+        const { folderName } = JSON.parse(body);
+        if (!folderName) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: false, message: 'folderName is required' }));
+          return;
+        }
+
+        const os = require('os');
+        const fs = require('fs');
+        const homeDir = os.homedir();
+        const candidates = [
+          path.join(homeDir, 'Downloads', folderName),
+          path.join(homeDir, 'Desktop', folderName),
+          path.join(homeDir, 'Documents', folderName),
+          path.join(homeDir, 'OneDrive', folderName),
+          path.join(process.cwd(), folderName),
+        ];
+
+        for (const c of candidates) {
+          if (fs.existsSync(c)) {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: true, folderPath: c }));
+            return;
+          }
+        }
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, folderPath: null, message: 'Not found' }));
+      } catch {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, message: 'Invalid request' }));
+      }
+    });
+    return;
+  }
+
   // Scanner start endpoint
   if (req.url === '/api/v1/scanner/start' && req.method === 'POST') {
     let body = '';
@@ -45,11 +87,12 @@ const server = http.createServer(async (req, res) => {
         const projectRoot = path.resolve(process.cwd());
         const scriptPath = path.join(projectRoot, 'scripts', 'scanWithOCR-local.ts');
 
-        const child = spawn('npx', ['tsx', scriptPath, folderPath], {
+        const tsxCli = require.resolve('tsx/cli');
+        const child = spawn(process.execPath, [tsxCli, scriptPath, folderPath], {
           cwd: projectRoot,
           detached: true,
           stdio: 'ignore',
-          shell: true,
+          windowsHide: true,
         });
 
         child.unref();
@@ -64,6 +107,37 @@ const server = http.createServer(async (req, res) => {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ success: false, message: 'Invalid request' }));
       }
+    });
+    return;
+  }
+
+  // Ingest endpoint — spawns the ingest script
+  if (req.url === '/api/v1/scanner/ingest' && req.method === 'POST') {
+    const projectRoot = path.resolve(process.cwd());
+    const scriptPath = path.join(projectRoot, 'scripts', 'ingest-to-supabase.ts');
+
+    const child = spawn('npx', ['tsx', scriptPath], {
+      cwd: projectRoot,
+      stdio: 'pipe',
+      shell: true,
+    });
+
+    let output = '';
+    child.stdout?.on('data', (d) => { output += d.toString(); });
+    child.stderr?.on('data', (d) => { output += d.toString(); });
+
+    child.on('close', (code) => {
+      res.writeHead(code === 0 ? 200 : 500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        success: code === 0,
+        message: code === 0 ? 'Ingestion complete' : 'Ingestion failed',
+        output: output.trim(),
+      }));
+    });
+
+    child.on('error', () => {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: false, message: 'Failed to start ingestion script' }));
     });
     return;
   }

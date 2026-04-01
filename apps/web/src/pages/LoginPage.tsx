@@ -7,6 +7,7 @@ import { useNavigate } from 'react-router-dom';
 import { BuildingOffice2Icon } from '@heroicons/react/24/outline';
 import { api, ApiError } from '../lib/api-client';
 import { useAuthStore } from '../store/auth.store';
+import { supabase } from '../lib/supabase';
 
 interface LoginResponse {
   success: boolean;
@@ -36,6 +37,49 @@ export function LoginPage() {
   const [showMfa, setShowMfa] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [oauthLoading, setOauthLoading] = useState(false);
+
+  function handleDemoLogin() {
+    setUser({
+      id: 'demo-user-001',
+      email: 'demo@nightaudit.com',
+      fullName: 'Demo User',
+      role: 'super_admin',
+      orgId: 'org-demo-001',
+      permissions: [
+        'properties:read', 'properties:write', 'properties:delete',
+        'reports:read', 'reports:upload', 'reports:review', 'reports:delete', 'reports:download',
+        'metrics:read', 'metrics:override', 'metrics:approve',
+        'financials:read',
+        'alerts:read', 'alerts:acknowledge', 'alerts:resolve',
+        'tasks:read', 'tasks:create', 'tasks:assign', 'tasks:complete',
+        'admin:users', 'admin:roles', 'admin:audit', 'admin:sessions', 'admin:properties',
+        'ai:summaries',
+      ],
+    });
+    navigate('/dashboard');
+  }
+
+  async function handleMicrosoftLogin() {
+    setError('');
+    setOauthLoading(true);
+    try {
+      const { error: oauthError } = await supabase.auth.signInWithOAuth({
+        provider: 'azure',
+        options: {
+          scopes: 'email profile openid',
+          redirectTo: `${window.location.origin}/auth/callback`,
+        },
+      });
+      if (oauthError) {
+        setError(oauthError.message);
+        setOauthLoading(false);
+      }
+    } catch {
+      setError('Failed to initiate Microsoft sign-in.');
+      setOauthLoading(false);
+    }
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -88,12 +132,40 @@ export function LoginPage() {
         </div>
 
         <div className="card p-6">
+          {error && (
+            <div className="px-3 py-2 mb-4 text-sm text-danger-600 bg-danger-50 rounded-lg border border-danger-100">
+              {error}
+            </div>
+          )}
+
+          <button
+            type="button"
+            onClick={handleMicrosoftLogin}
+            disabled={oauthLoading}
+            className="w-full flex items-center justify-center gap-3 px-4 py-2.5 text-sm font-medium
+                       text-gray-700 bg-white border border-gray-300 rounded-lg
+                       hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-brand-500
+                       disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <svg width="20" height="20" viewBox="0 0 21 21" fill="none">
+              <rect x="1" y="1" width="9" height="9" fill="#F25022" />
+              <rect x="11" y="1" width="9" height="9" fill="#7FBA00" />
+              <rect x="1" y="11" width="9" height="9" fill="#00A4EF" />
+              <rect x="11" y="11" width="9" height="9" fill="#FFB900" />
+            </svg>
+            {oauthLoading ? 'Redirecting…' : 'Sign in with Microsoft'}
+          </button>
+
+          <div className="relative my-5">
+            <div className="absolute inset-0 flex items-center">
+              <div className="w-full border-t border-gray-200" />
+            </div>
+            <div className="relative flex justify-center text-xs">
+              <span className="bg-white px-2 text-gray-400">or</span>
+            </div>
+          </div>
+
           <form onSubmit={handleSubmit} className="space-y-4">
-            {error && (
-              <div className="px-3 py-2 text-sm text-danger-600 bg-danger-50 rounded-lg border border-danger-100">
-                {error}
-              </div>
-            )}
 
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1" htmlFor="email">
@@ -157,6 +229,25 @@ export function LoginPage() {
               {loading ? 'Signing in…' : 'Sign in'}
             </button>
           </form>
+
+          <div className="relative my-5">
+            <div className="absolute inset-0 flex items-center">
+              <div className="w-full border-t border-gray-200" />
+            </div>
+            <div className="relative flex justify-center text-xs">
+              <span className="bg-white px-2 text-gray-400">demo</span>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={handleDemoLogin}
+            className="w-full flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-medium
+                       text-brand-700 bg-brand-50 border border-brand-200 rounded-lg
+                       hover:bg-brand-100 focus:outline-none focus:ring-2 focus:ring-brand-500"
+          >
+            Enter as Demo User
+          </button>
         </div>
 
         <p className="text-center text-xs text-gray-400 mt-6">

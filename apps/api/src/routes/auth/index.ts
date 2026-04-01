@@ -185,6 +185,131 @@ export async function authRoutes(app: FastifyInstance) {
     },
   );
 
+  // ─── POST /oauth-callback ────────────────────────────────────────────────────
+  app.post(
+    '/oauth-callback',
+    {
+      config: { rateLimit: { max: env.RATE_LIMIT_AUTH_MAX, timeWindow: '15 minutes' } },
+    },
+    async (req, reply) => {
+      const { access_token } = z
+        .object({ access_token: z.string().min(1), provider: z.string() })
+        .parse(req.body);
+
+      // Verify the Supabase access token and get the OAuth user.
+      const { createClient } = await import('@supabase/supabase-js');
+      const adminClient = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY, {
+        auth: { autoRefreshToken: false, persistSession: false },
+      });
+
+      const { data: supaUser, error: supaError } = await adminClient.auth.getUser(access_token);
+
+      if (supaError || !supaUser.user?.email) {
+        return reply.code(401).send({
+          success: false,
+          error: { code: 'OAUTH_INVALID_TOKEN', message: 'Invalid OAuth session.' },
+        });
+      }
+
+      const oauthEmail = supaUser.user.email.toLowerCase();
+
+      // Match against existing user profile.
+      const user = await db.userProfile.findFirst({
+        where: { email: oauthEmail, isActive: true },
+        include: { role: true },
+      });
+
+      if (!user) {
+        await app.audit(req, {
+          action: 'auth.oauth.failed',
+          resourceType: 'auth',
+          result: 'failure',
+          failureReason: 'user_not_found',
+          afterValue: { email: oauthEmail },
+        });
+        return reply.code(403).send({
+          success: false,
+          error: {
+            code: 'USER_NOT_PROVISIONED',
+            message: 'No account found for this Microsoft account. Contact your administrator.',
+          },
+        });
+      }
+
+      // Enforce concurrent session limit.
+      const activeSessions = await db.userSession.count({
+        where: { userId: user.id, isActive: true, expiresAt: { gt: new Date() } },
+      });
+
+      if (activeSessions >= env.SESSION_MAX_CONCURRENT) {
+        const oldest = await db.userSession.findFirst({
+          where: { userId: user.id, isActive: true },
+          orderBy: { lastActivity: 'asc' },
+        });
+        if (oldest) {
+          await db.userSession.update({
+            where: { id: oldest.id },
+            data: { isActive: false, revokedAt: new Date() },
+          });
+        }
+      }
+
+      const expiresAt = new Date(Date.now() + SESSION_TTL_MS);
+      const session = await db.userSession.create({
+        data: {
+          userId: user.id,
+          tokenHash: '',
+          ipAddress: req.ip,
+          userAgent: req.headers['user-agent'],
+          expiresAt,
+        },
+      });
+
+      const token = app.jwt.sign(
+        { sub: user.id, sessionId: session.id, orgId: user.orgId },
+        { expiresIn: '8h' },
+      );
+
+      const { createHash } = await import('node:crypto');
+      const tokenHash = createHash('sha256').update(token).digest('hex');
+      await db.userSession.update({ where: { id: session.id }, data: { tokenHash } });
+
+      await app.audit(req, {
+        action: 'auth.oauth.success',
+        resourceType: 'auth',
+        resourceId: user.id,
+        afterValue: { provider: 'azure' },
+      });
+
+      await db.userProfile.update({
+        where: { id: user.id },
+        data: { lastLoginAt: new Date() },
+      });
+
+      reply.setCookie('session_token', token, {
+        httpOnly: true,
+        secure: env.NODE_ENV === 'production',
+        sameSite: 'strict',
+        path: '/',
+        expires: expiresAt,
+      });
+
+      return reply.send({
+        success: true,
+        data: {
+          user: {
+            id: user.id,
+            email: user.email,
+            fullName: user.fullName,
+            role: user.role.name,
+            orgId: user.orgId,
+          },
+          expiresAt,
+        },
+      });
+    },
+  );
+
   // ─── POST /logout ───────────────────────────────────────────────────────────
   app.post(
     '/logout',

@@ -3,7 +3,7 @@
  * Polls /data/scan-progress.json while a scan is running.
  */
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { clsx } from 'clsx';
 import {
   FolderOpenIcon,
@@ -34,6 +34,12 @@ interface ScanProgress {
   nativePdfCount?: number;
   ocrPdfCount?: number;
   spreadsheetCount?: number;
+}
+
+interface IngestResult {
+  success: boolean;
+  data?: { dates: number; revenueFlash: number; flashReport: number; engineering: number };
+  message?: string;
 }
 
 interface ScanControlsProps {
@@ -81,61 +87,71 @@ export function ScanControls({ onScanComplete }: ScanControlsProps) {
   const [isScanning, setIsScanning] = useState(false);
   const [progress, setProgress] = useState<ScanProgress | null>(null);
   const [showPanel, setShowPanel] = useState(false);
+  const [ingestStatus, setIngestStatus] = useState<'idle' | 'ingesting' | 'done' | 'error'>('idle');
+  const [ingestResult, setIngestResult] = useState<IngestResult | null>(null);
+  const folderInputRef = useRef<HTMLInputElement>(null);
+  const scanStartedAtRef = useRef<string | null>(null);
+  const scanIdRef = useRef(0);
 
-  // Poll progress file while scanning
+  // Poll progress ONLY while actively scanning
   useEffect(() => {
-    if (!isScanning && !showPanel) return;
+    if (!isScanning) return;
 
+    const currentScanId = scanIdRef.current;
     const poll = setInterval(async () => {
-      try {
-        const res = await fetch('/data/scan-progress.json?t=' + Date.now());
-        if (res.ok) {
-          const data: ScanProgress = await res.json();
-          setProgress(data);
+      if (scanIdRef.current !== currentScanId) return;
 
-          if (data.status === 'done') {
-            setIsScanning(false);
-            onScanComplete();
-          } else if (data.status === 'error') {
-            setIsScanning(false);
-          }
+      try {
+        const res = await fetch('/api/v1/scanner/progress');
+        if (!res.ok) return;
+        const data: ScanProgress = await res.json();
+        if (scanIdRef.current !== currentScanId) return;
+        setProgress(data);
+
+        if (data.status === 'done') {
+          setIsScanning(false);
+          onScanComplete();
+          // Auto-ingest scan results to Supabase
+          setIngestStatus('ingesting');
+          fetch('/api/v1/scanner/ingest', { method: 'POST' })
+            .then((r) => r.json())
+            .then((res: IngestResult) => {
+              setIngestResult(res);
+              setIngestStatus(res.success ? 'done' : 'error');
+            })
+            .catch(() => {
+              setIngestStatus('error');
+              setIngestResult({ success: false, message: 'Failed to connect to ingestion API.' });
+            });
+        } else if (data.status === 'error') {
+          setIsScanning(false);
         }
       } catch {
-        // File doesn't exist yet — ignore
+        // ignore
       }
     }, 2000);
 
     return () => clearInterval(poll);
-  }, [isScanning, showPanel, onScanComplete]);
+  }, [isScanning, onScanComplete]);
 
-  // Check for existing progress on mount
-  useEffect(() => {
-    fetch('/data/scan-progress.json?t=' + Date.now())
-      .then((r) => r.ok ? r.json() : null)
-      .then((data: ScanProgress | null) => {
-        if (data) {
-          setProgress(data);
-          if (data.status === 'scanning') {
-            setIsScanning(true);
-            setShowPanel(true);
-          }
-        }
-      })
-      .catch(() => null);
-  }, []);
 
   const handleStartScan = useCallback(() => {
     if (!folderPath.trim()) return;
+    const startTime = new Date().toISOString();
+    scanStartedAtRef.current = startTime;
+    scanIdRef.current += 1;
     setIsScanning(true);
     setShowPanel(true);
-    setProgress(null);
+    setProgress({ status: 'scanning', startedAt: startTime, currentDate: '', currentDateIndex: 0, totalDateFolders: 0, filesProcessed: 0, filesInCurrentDate: 0, totalFilesEstimate: 0, elapsedMs: 0, currentFile: 'Starting...' });
+    setIngestStatus('idle');
+    setIngestResult(null);
 
     // Start the scan via the scanner script
     // This calls a tiny endpoint that spawns the process
     fetch('/api/v1/scanner/start', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ folderPath: folderPath.trim() }),
+      body: JSON.stringify({ folderPath: folderPath.trim(), startedAt: startTime }),
     }).catch(() => {
       // If API isn't available, show instructions
       setProgress({
@@ -170,13 +186,25 @@ export function ScanControls({ onScanComplete }: ScanControlsProps) {
           <ArrowPathIcon className="w-5 h-5 text-brand-600 animate-spin shrink-0" />
         ) : progress?.status === 'done' ? (
           <CheckCircleIcon className="w-5 h-5 text-success-600 shrink-0" />
+        ) : ingestStatus === 'ingesting' ? (
+          <ArrowPathIcon className="w-5 h-5 text-blue-500 animate-spin shrink-0" />
+        ) : ingestStatus === 'done' ? (
+          <CheckCircleIcon className="w-5 h-5 text-success-600 shrink-0" />
         ) : (
           <FolderOpenIcon className="w-5 h-5 text-neutral-400 shrink-0" />
         )}
 
         <div className="flex-1 min-w-0">
           <p className="text-sm font-medium text-neutral-800">
-            {isScanning ? 'Scanning in progress...' : progress?.status === 'done' ? 'Scan complete' : 'Scan Files'}
+            {isScanning
+              ? 'Scanning in progress...'
+              : ingestStatus === 'ingesting'
+              ? 'Pushing data to dashboard...'
+              : ingestStatus === 'done'
+              ? 'Scan complete — data synced to dashboard'
+              : progress?.status === 'done'
+              ? 'Scan complete'
+              : 'Scan Files'}
           </p>
           {isScanning && progress && (
             <p className="text-xs text-neutral-400 mt-0.5">
@@ -184,6 +212,15 @@ export function ScanControls({ onScanComplete }: ScanControlsProps) {
               Date {progress.currentDateIndex}/{progress.totalDateFolders} &middot;
               {fmtDuration(progress.elapsedMs)}
             </p>
+          )}
+          {!isScanning && progress?.status === 'done' && (
+            <p className="text-xs text-success-600 mt-0.5">
+              {progress.filesProcessed} files processed in {fmtDuration(progress.elapsedMs)}
+              {ingestResult?.data && ` · ${ingestResult.data.revenueFlash} revenue flash, ${ingestResult.data.flashReport} flash report, ${ingestResult.data.engineering} engineering rows ingested`}
+            </p>
+          )}
+          {ingestStatus === 'error' && (
+            <p className="text-xs text-danger-600 mt-0.5">{ingestResult?.message ?? 'Ingestion failed'}</p>
           )}
         </div>
 
@@ -194,6 +231,11 @@ export function ScanControls({ onScanComplete }: ScanControlsProps) {
               className="h-full rounded-full bg-brand-500 transition-all duration-500"
               style={{ width: `${pct}%` }}
             />
+          </div>
+        )}
+        {ingestStatus === 'ingesting' && (
+          <div className="w-24 h-1.5 rounded-full bg-blue-100 overflow-hidden shrink-0">
+            <div className="h-full rounded-full bg-blue-500 animate-pulse w-full" />
           </div>
         )}
 
@@ -219,19 +261,61 @@ export function ScanControls({ onScanComplete }: ScanControlsProps) {
                 />
               </div>
               <button
-                onClick={handleStartScan}
-                disabled={isScanning || !folderPath.trim()}
-                className={clsx(
-                  'btn-primary !px-4 shrink-0',
-                  isScanning && 'opacity-50 cursor-not-allowed',
-                )}
+                type="button"
+                onClick={async () => {
+                  try {
+                    const handle = await (window as unknown as { showDirectoryPicker: () => Promise<FileSystemDirectoryHandle> }).showDirectoryPicker();
+                    const res = await fetch('/api/v1/scanner/resolve-folder', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ folderName: handle.name }),
+                    });
+                    const data = await res.json();
+                    if (data.success && data.folderPath) {
+                      setFolderPath(data.folderPath);
+                    } else {
+                      // Could not resolve — ask user to paste the full path
+                      const fullPath = window.prompt(
+                        `Could not auto-detect path for "${handle.name}".\nPaste the full folder path:`,
+                      );
+                      if (fullPath?.trim()) setFolderPath(fullPath.trim());
+                    }
+                  } catch {
+                    // User cancelled or API unsupported
+                  }
+                }}
+                disabled={isScanning}
+                className="btn-secondary !px-3 shrink-0"
+                title="Browse for folder"
               >
-                {isScanning ? (
-                  <><ArrowPathIcon className="w-4 h-4 animate-spin" /> Scanning...</>
-                ) : (
-                  <><PlayIcon className="w-4 h-4" /> Start Scan</>
-                )}
+                <FolderOpenIcon className="w-4 h-4" />
+                <span className="text-xs">Browse</span>
               </button>
+              {isScanning ? (
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      await fetch('/api/v1/scanner/cancel', { method: 'POST' });
+                    } catch { /* ignore */ }
+                    setIsScanning(false);
+                    setProgress(null);
+                    scanStartedAtRef.current = null;
+                  }}
+                  className="btn-secondary !px-4 shrink-0 !text-danger-600 !border-danger-300 hover:!bg-danger-50"
+                >
+                  <StopIcon className="w-4 h-4" />
+                  Cancel
+                </button>
+              ) : (
+                <button
+                  onClick={handleStartScan}
+                  disabled={!folderPath.trim()}
+                  className="btn-primary !px-4 shrink-0"
+                >
+                  <PlayIcon className="w-4 h-4" /> Start Scan
+                </button>
+              )}
             </div>
             <p className="text-[10px] text-neutral-400 mt-1">
               Enter the full path to the folder containing hotel report PDFs. The scanner will use local OCR to read and categorize every file.
@@ -321,6 +405,29 @@ export function ScanControls({ onScanComplete }: ScanControlsProps) {
                   />
                 </div>
               ) : null}
+
+              {/* Ingestion status */}
+              {ingestStatus !== 'idle' && (
+                <div className={clsx(
+                  'p-3 rounded-md border',
+                  ingestStatus === 'ingesting' && 'bg-blue-50 border-blue-200',
+                  ingestStatus === 'done' && 'bg-success-50 border-success-200',
+                  ingestStatus === 'error' && 'bg-danger-50 border-danger-200',
+                )}>
+                  <p className={clsx(
+                    'text-xs font-medium',
+                    ingestStatus === 'ingesting' && 'text-blue-700',
+                    ingestStatus === 'done' && 'text-success-700',
+                    ingestStatus === 'error' && 'text-danger-700',
+                  )}>
+                    {ingestStatus === 'ingesting' && 'Pushing data to dashboard...'}
+                    {ingestStatus === 'done' && ingestResult?.data && (
+                      <>Data ingested: {ingestResult.data.revenueFlash} revenue flash, {ingestResult.data.flashReport} flash report, {ingestResult.data.engineering} engineering rows across {ingestResult.data.dates} dates</>
+                    )}
+                    {ingestStatus === 'error' && (ingestResult?.message ?? 'Ingestion failed')}
+                  </p>
+                </div>
+              )}
 
               {/* Error message */}
               {progress.status === 'error' && progress.errorMessage && (

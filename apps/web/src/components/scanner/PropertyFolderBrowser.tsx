@@ -246,7 +246,16 @@ interface PropertyFolderBrowserProps {
 
 export function PropertyFolderBrowser({ summary, selectedDate }: PropertyFolderBrowserProps) {
   const [expandedFolder, setExpandedFolder] = useState<string | null>(null);
+  const [expandedDates, setExpandedDates] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState('');
+
+  const toggleDate = (date: string) => {
+    setExpandedDates((prev) => {
+      const next = new Set(prev);
+      if (next.has(date)) next.delete(date); else next.add(date);
+      return next;
+    });
+  };
 
   // Filter by date
   const filteredDateFolders = useMemo(() => {
@@ -329,35 +338,58 @@ export function PropertyFolderBrowser({ summary, selectedDate }: PropertyFolderB
         </span>
       </div>
 
-      {/* Date groups */}
-      {[...groupedByDate.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([date, items]) => (
-        <div key={date} className="mb-6">
-          {/* Date header */}
-          <div className="flex items-center gap-2 mb-3 px-1">
-            <div className="flex items-center gap-2">
+      {/* Expand/Collapse all */}
+      <div className="flex items-center gap-2 mb-3">
+        <button onClick={() => setExpandedDates(new Set([...groupedByDate.keys()]))} className="text-[10px] font-medium text-brand-600 hover:underline">Expand All</button>
+        <span className="text-neutral-300">|</span>
+        <button onClick={() => setExpandedDates(new Set())} className="text-[10px] font-medium text-brand-600 hover:underline">Collapse All</button>
+      </div>
+
+      {/* Date groups — collapsible */}
+      {[...groupedByDate.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([date, items]) => {
+        const isDateExpanded = expandedDates.has(date);
+        const dateFiles = items.reduce((s, item) => s + item.folder.fileCount, 0);
+        const dateCategorized = items.reduce((s, item) => s + item.folder.files.filter((f) => f.reportType !== null).length, 0);
+
+        return (
+          <div key={date} className="mb-3">
+            {/* Date header — clickable */}
+            <button
+              onClick={() => toggleDate(date)}
+              className="w-full flex items-center gap-2 px-3 py-2.5 rounded-lg bg-neutral-50 hover:bg-neutral-100 transition-colors text-left"
+            >
+              <ChevronRightIcon className={clsx('w-4 h-4 text-neutral-400 transition-transform shrink-0', isDateExpanded && 'rotate-90')} />
               <span className="text-sm font-bold text-neutral-800">{date}</span>
               <span className="text-xs text-neutral-400">
-                {items.length} property folder{items.length !== 1 ? 's' : ''}
+                {items.length} properties &middot; {dateFiles} files
               </span>
-            </div>
-            <div className="flex-1 border-t border-neutral-200 ml-2" />
-          </div>
+              <div className="flex-1" />
+              <span className={clsx(
+                'text-[10px] font-semibold px-2 py-0.5 rounded',
+                dateCategorized === dateFiles ? 'bg-success-50 text-success-600' : 'bg-neutral-100 text-neutral-500',
+              )}>
+                {dateCategorized}/{dateFiles} classified
+              </span>
+            </button>
 
-          {/* Folder cards */}
-          <div className="space-y-2">
-            {items
-              .sort((a, b) => a.folder.folderName.localeCompare(b.folder.folderName))
-              .map((item) => (
-                <FolderCard
-                  key={item.key}
-                  folder={item.folder}
-                  isExpanded={expandedFolder === item.key}
-                  onToggle={() => handleToggle(item.key)}
-                />
-              ))}
+            {/* Folder cards — only show when date is expanded */}
+            {isDateExpanded && (
+              <div className="space-y-2 mt-2 ml-2">
+                {items
+                  .sort((a, b) => a.folder.folderName.localeCompare(b.folder.folderName))
+                  .map((item) => (
+                    <FolderCard
+                      key={item.key}
+                      folder={item.folder}
+                      isExpanded={expandedFolder === item.key}
+                      onToggle={() => handleToggle(item.key)}
+                    />
+                  ))}
+              </div>
+            )}
           </div>
-        </div>
-      ))}
+        );
+      })}
 
       {searchedFolders.length === 0 && (
         <div className="card flex flex-col items-center justify-center py-16">

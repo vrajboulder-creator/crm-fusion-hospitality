@@ -2,6 +2,7 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
 import fs from 'fs';
+import { scannerMiddlewarePlugin } from './src/server/scanner-middleware';
 
 /** Vite plugin to serve PDF files from the OneDrive scan folder */
 function servePdfsPlugin() {
@@ -40,7 +41,7 @@ function servePdfsPlugin() {
 }
 
 export default defineConfig({
-  plugins: [react(), servePdfsPlugin()],
+  plugins: [react(), servePdfsPlugin(), scannerMiddlewarePlugin()],
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
@@ -49,9 +50,14 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      '/api': {
+      // Forward non-scanner API calls to the backend if it's running
+      '/api/v1': {
         target: 'http://localhost:3001',
         changeOrigin: true,
+        // Don't fail if API server isn't running
+        configure: (proxy) => {
+          proxy.on('error', () => {});
+        },
       },
     },
   },

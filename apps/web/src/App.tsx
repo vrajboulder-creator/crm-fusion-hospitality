@@ -6,18 +6,15 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { useAuthStore } from './store/auth.store';
 import { AppShell } from './components/layout/AppShell';
 import { LoginPage } from './pages/LoginPage';
+import { AuthCallbackPage } from './pages/AuthCallbackPage';
 import { DashboardPage } from './pages/DashboardPage';
 import { PropertyPage } from './pages/PropertyPage';
-import { ReportsPage } from './pages/ReportsPage';
-import { AlertsPage } from './pages/AlertsPage';
-import { TasksPage } from './pages/TasksPage';
 import { AdminPage } from './pages/AdminPage';
 import { PerformanceHubPage } from './pages/PerformanceHubPage';
 import { StoneriverDashboardPage } from './pages/StoneriverDashboardPage';
 import { FlashReportDashboardPage } from './pages/FlashReportDashboardPage';
 import { EngineeringDashboardPage } from './pages/EngineeringDashboardPage';
 import { DocumentsPage } from './pages/DocumentsPage';
-import { BatchReviewPage } from './pages/BatchReviewPage';
 import { ScannerPage } from './pages/ScannerPage';
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
@@ -31,6 +28,7 @@ export default function App() {
     <BrowserRouter>
       <Routes>
         <Route path="/login" element={<LoginPage />} />
+        <Route path="/auth/callback" element={<AuthCallbackPage />} />
 
         <Route
           path="/"
@@ -43,11 +41,7 @@ export default function App() {
           <Route index element={<Navigate to="/dashboard" replace />} />
           <Route path="dashboard" element={<DashboardPage />} />
           <Route path="properties/:id" element={<PropertyPage />} />
-          <Route path="reports" element={<ReportsPage />} />
           <Route path="documents" element={<DocumentsPage />} />
-          <Route path="batch-review" element={<BatchReviewPage />} />
-          <Route path="alerts" element={<AlertsPage />} />
-          <Route path="tasks" element={<TasksPage />} />
           <Route path="admin" element={<AdminPage />} />
           <Route path="stoneriver" element={<PerformanceHubPage />} />
           <Route path="stoneriver/revenue-flash" element={<StoneriverDashboardPage />} />
